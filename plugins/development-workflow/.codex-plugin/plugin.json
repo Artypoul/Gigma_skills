@@ -1,6 +1,6 @@
 {
   "name": "development-workflow",
-  "version": "0.4.4+codex.20260816155933",
+  "version": "0.4.7+codex.20260902130545",
   "description": "Generic development workflow skills for Codex agents: high-agency complex-task execution, real-capability routing, session control, security-sensitive execution, project context bootstrap, workflow routing, code-first evidence gathering, prompt architecture porting, evidence-first research, explicit outcome clarification for ambiguous code tasks, evidence-based handoff, post-merge protocol, PR fix continuation, review gates, decision-lock checks, deploy checks, dirty worktree safety, and wrong-direction recovery after user feedback.",
   "author": {
     "name": "Artypoul"

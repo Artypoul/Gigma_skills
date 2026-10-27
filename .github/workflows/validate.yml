@@ -24,6 +24,9 @@ jobs:
       - name: Run Codex Toolkit review regression tests
         run: python -m unittest discover -s plugins/codex-toolkit/tests -p "test_*.py"
 
+      - name: Run development workflow regression tests
+        run: python -m unittest discover -s plugins/development-workflow/tests -p "test_*.py"
+
       - name: Install H2D gate dependencies
         working-directory: plugins/h2d-transfer/skills/h2d-pixel-perfect-transfer
         run: |

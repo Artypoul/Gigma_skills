@@ -21,6 +21,15 @@ a tool, connector, file delivery, browser, scheduler, or storage capability.
    runtime requirement. Do not fabricate a UI, output, delivery, or integration result.
 6. Verify the final artifact or external effect is accessible to the user before calling it done.
 
+## Browser Capability Routing
+
+Treat these as separate capabilities: an in-app Browser tool, a Playwright CLI executable, and an importable Node package. The presence of one does not prove the others exist.
+
+1. Prefer the installed Browser or Playwright specialist skill when it matches the task.
+2. Before terminal automation, probe the exact execution path the script needs. `npx playwright --version` proves the CLI can launch; it does not prove `require('playwright')` or `import 'playwright'` will resolve in Node.
+3. Use a Node API script only after the package resolves in that runtime. Otherwise use the supported CLI/in-app route or report the exact missing package; do not repeatedly retry incompatible imports.
+4. Keep generated browser output in already ignored project locations, or classify it explicitly before handoff. Never call a browser-based result ready while its working tree contains unexplained generated artifacts.
+
 ## Rules
 
 - A request for a file means create a real file when the relevant capability is available; a

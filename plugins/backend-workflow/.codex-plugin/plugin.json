@@ -1,6 +1,6 @@
 {
   "name": "backend-workflow",
-  "version": "0.1.5+codex.20260816143748",
+  "version": "0.1.6+codex.20260902122857",
   "description": "Generic backend engineering skills for designing and reviewing HTTP APIs with domain-driven design on FastAPI, SQLAlchemy, PostgreSQL, and Alembic: bounded contexts, aggregates, transaction boundaries, concurrency and isolation, idempotency contracts, migrations, events and transactional outbox, plus an evidence-based production readiness gate.",
   "author": {
     "name": "Artypoul"

@@ -54,6 +54,14 @@ Reading the repository is not enough when the claim is about something the repos
 - When you reconstruct what happened from logs, separate observed events from inferred ones. Never present a reconstructed sequence of user actions as an established fact.
 - If the user pushes back on a claim, produce the source or drop the claim. Do not defend a guess with confidence.
 
+For architecture, data-flow, and business-logic explanations, keep three classes visibly separate:
+
+- **Подтверждено:** directly supported by named code, schema/FK, runtime output, generated contract, or a passing test.
+- **Вывод:** the best explanation derived from several facts, with the inference and missing proof named.
+- **Продуктовое решение:** desired behavior or architecture that is not yet current implementation and needs owner approval when several valid options exist.
+
+Do not smooth over a missing FK, runtime path, ownership link, or test by describing the intended architecture as the current one. If that distinction changes the user's decision, lead with it.
+
 ## Minimum Evidence
 
 Before giving a code-dependent answer, inspect at least one of:

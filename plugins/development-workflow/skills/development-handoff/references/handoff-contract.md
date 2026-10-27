@@ -64,15 +64,18 @@ Read PR comment bodies only when needed for review/fix work. Read remote URLs on
 ### Post-Merge
 
 ```bash
-gh pr view <number> --json url,state,mergedAt,mergeCommit
+gh pr view <number> --json url,state,mergedAt,mergeCommit,headRefName,headRefOid,baseRefName
 git fetch --all --prune
 git switch <base-branch>
 git pull --ff-only
 git status --short --branch
 git log --oneline --decorate -5
+python <skill-dir>/scripts/post_merge_cleanup.py --repo <repo-path> --base <baseRefName> --merged-head <headRefName> --merged-head-oid <headRefOid>
+python <skill-dir>/scripts/post_merge_cleanup.py --repo <repo-path> --base <baseRefName> --merged-head <headRefName> --merged-head-oid <headRefOid> --apply --expected-plan-sha256 <plan_sha256>
+git branch -vv
 ```
 
-If the worktree is dirty, do not switch or pull until the dirty files are classified.
+If the worktree is dirty, classify it before switching or pulling. Tracked, staged, unknown, or product files block branch cleanup; allowlisted generated untracked artifacts may stay in place and be ignored by the cleanup helper. Run the helper relative to the loaded skill directory. Preview before applying, and pass its exact `plan_sha256`; any plan drift, including changed ignored dirty entries, requires a new preview. Never delete a remote branch, a branch with unmerged commits after the verified PR head, or a branch occupied by another worktree. Apply uses one compare-and-swap ref transaction so one stale branch blocks the whole ref cleanup without partial deletion. A `partial` or `unknown` result requires read-back and forbids blind retry.
 
 ### Fix Existing PR
 
@@ -152,7 +155,7 @@ Do not call an unapproved drift a "contract decision". Green CI does not approve
 
 | User phrase | Required behavior |
 | --- | --- |
-| `смерджил`, `merged` | Run post-merge protocol; verify PR state and checks. |
+| `смерджил`, `merged`, `PR смержен`, contextually merge-specific `залил`, `финализация после мерджа` | Run the complete post-merge protocol; verify PR state, update base, safely remove merged local working branches, and check workflows. Do not acknowledge and stop. |
 | `чини в PR`, `там же` | Reuse current PR branch; do not create a new PR. |
 | `сделай монстр ревью` | Findings-first review, then fix P1/P2 if asked. |
 | `продак реди?` | Run prod-ready check; answer from evidence. |
@@ -161,13 +164,18 @@ Do not call an unapproved drift a "contract decision". Green CI does not approve
 | `стоп`, `не туда` | Stop current workflow immediately. |
 | `не то`, `wrong`, `nothing changed` | Stop the old fix path, rebuild evidence, and route through recovery before more edits. |
 
+Negations, hypotheticals and questions such as `ещё не смерджил`, `если смерджим` and `как смержить?` are not post-merge triggers. A stop command has priority over every process trigger. The final task status must remain one of `ready`, `partial`, `blocked`, or `unknown`; verified merge evidence is what permits `ready`, not a separate `verified` status.
+
 ## Failure Patterns To Prevent
 
 - Treating `merged` as a chat note instead of a post-merge trigger.
+- Updating the base branch but leaving the verified merged local working branch behind.
+- Using broad force-delete or remote branch deletion instead of exact previewed local cleanup.
+- Applying a newly calculated cleanup set that was not the exact preview the user inspected.
 - Creating a new PR when the user asked to fix the existing PR.
 - Declaring "ready" while a review/check is still queued.
 - Reopening a product decision after the user explicitly froze it.
-- Mixing unrelated dirty-tree changes into the current commit.
+- Blocking on allowlisted generated untracked artifacts, or mixing unrelated dirty-tree changes into the current commit.
 - Relying on memory instead of reading PR comments, checks, and branch state.
 - Switching domains after the user narrowed scope.
 - Reporting deploy success without checking workflow or health evidence.
@@ -183,6 +191,8 @@ For the user:
 Сделал post-merge protocol.
 - PR: merged
 - base branch: updated to <commit>
+- deleted local branches: <list/none>
+- preserved branches: <list and reason/none>
 - checks: <status>
 - dirty tree: <clean/dirty>
 - next: <action>
