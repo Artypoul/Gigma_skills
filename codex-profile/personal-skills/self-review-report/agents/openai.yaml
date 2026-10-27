@@ -1,0 +1,7 @@
+interface:
+  display_name: "Второй проход"
+  short_description: "Второй проход коротких задач с отчётом исправлений"
+  default_prompt: "Use $self-review-report to check evidence and scope; for a completed short task request one post-answer pass, repair authorized defects, and report what changed. Skip extra continuation in long workflows."
+
+policy:
+  allow_implicit_invocation: true

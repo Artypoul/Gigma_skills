@@ -1,0 +1,3 @@
+interface:
+  display_name: "Counterparty Audit Investigation"
+  short_description: "Read-only Gigma ERP counterparty diagnostics/history investigation by phone or ID"
