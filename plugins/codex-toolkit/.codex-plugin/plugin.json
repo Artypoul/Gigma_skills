@@ -1,6 +1,6 @@
 {
   "name": "codex-toolkit",
-  "version": "0.1.5+codex.20260816155813",
+  "version": "0.1.6+codex.20260902122857",
   "description": "General-purpose Codex skills for browser automation, image processing, security reviews, GitHub maintenance, provisioning, screenshots, admin UX, and full feature delivery.",
   "author": {
     "name": "Artypoul"

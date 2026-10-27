@@ -13,8 +13,9 @@ Use this skill as the first pass in any repository when project truth matters. I
 - Prefer project-local rules over global habits.
 - Treat missing context as a risk, not as permission to guess.
 - Do not paste secrets, raw `.env` values, private remote URLs, or long logs into chat.
-- Do not change files for read-only, review, audit, check-up, консилиум, or "посмотри/оцени" tasks.
+- Do not change files for read-only, review, audit, check-up, консилиум, or "посмотри/оцени" tasks unless the user explicitly asks to repair confirmed findings in the same request. A review-plus-fix request is changes-requested, but still does not authorize commit, push, PR, merge, deploy, or unrelated cleanup.
 - Do not create `project-memory.md` or any other context file unless the user explicitly asks to initialize project context.
+- Art's standing permission for every project (2026-09-15): an existing `project-memory.md` is operational agent memory, exempt from separate document-edit approval. Update it once at task completion from verified results of authorized changes, or correct stale facts during an assigned review-and-fix task. Earlier local document bans listing this file do not require renewed permission. Keep bootstrap and report-only tasks read-only; preserve unrelated dirty changes. This exception does not authorize creating missing memory, editing other documents or skills, changing product decisions, or commit/push, merge/deploy.
 
 ## Find The Project Root
 
@@ -24,7 +25,7 @@ Before reading context, resolve the project root:
 git rev-parse --show-toplevel
 ```
 
-If git root is unavailable, use the current working directory as a fallback and mark `Missing context: repo root unknown`. In monorepos or nested workspaces, also check for the nearest applicable `AGENTS.md` between the current directory and the root.
+If git root is unavailable, inspect only the current directory and its immediate child directories for a Git checkout. When exactly one child resolves to a Git root, use that nested root and record the container-to-repository mapping in the snapshot. When several children are repositories, use an explicit user path, canonical path in project rules/memory, or remote identity; if the choice is still ambiguous, stop and ask instead of scanning broadly or guessing. Use the current working directory as a fallback only when no repository can be resolved, and mark `Missing context: repo root unknown`. In monorepos or nested workspaces, also check for the nearest applicable `AGENTS.md` between the current directory and the root.
 
 ## Context Order
 
@@ -49,7 +50,9 @@ git log --oneline --decorate -5
 git branch -vv
 ```
 
-For review, handoff, PR fix, PR finalization, merge, deploy, or "ready?" work, PR/check/review evidence is mandatory. Prefer the strongest PR identifier available: user-supplied PR URL/number, then current branch PR, then `gh pr status` discovery. If GitHub CLI is unavailable, the repository cannot be inferred, or the user requested offline/local-only work, mark PR evidence as unknown/blocking instead of guessing.
+Cross-check any branch, PR, blocker, current-focus, and next-step claims in project memory against this Git snapshot and live PR evidence when available. A contradiction is `context_stale`, not permission to follow the stale instruction. During an explicitly requested context repair, update a clean target file from verified evidence. For report-only work or a target file with unrelated/unknown dirty changes, report the drift and do not overwrite it.
+
+For PR-backed review, handoff of an existing PR, PR fix, PR finalization, merge, deploy, or "ready to merge/deploy?" work, PR/check/review evidence is mandatory. Prefer the strongest PR identifier available: user-supplied PR URL/number, then current branch PR, then `gh pr status` discovery. A local diff/code review with no PR uses Git state and relevant local checks; record PR evidence as `not applicable`, not unknown or blocking. If PR evidence is actually required but GitHub CLI is unavailable, the repository cannot be inferred, or access is missing, mark that evidence as unknown/blocking instead of guessing.
 
 ```bash
 gh pr view <pr-url-or-number> --json url,state,headRefName,baseRefName,statusCheckRollup,reviewDecision
@@ -59,7 +62,7 @@ gh pr status
 
 When working from a fork, detached worktree, or non-default remote, pass `--repo <owner/name>` to `gh` commands after deriving it from the PR URL or `gh repo view --json nameWithOwner`.
 
-For dirty worktrees, classify files as current-task, pre-existing, generated, or unknown. Never reset or clean unrelated files. Before edits, if any target file is already dirty and its origin is unknown or pre-existing, stop and ask Art how to proceed.
+For dirty worktrees, classify files as current-task, pre-existing, generated, or unknown. Never reset or clean unrelated files. Before edits, if any target file is already dirty and its origin is unknown or pre-existing, enter `fail_closed`: show the exact dirty paths, the intended write allowlist, and the concrete collision risk, then ask one direct question. Do not write until Art answers that blocker explicitly after seeing those facts. A message about later review, PR, merge, deploy, or the broader goal does not authorize work over the named dirty files. If the answer is indirect, remain `fail_closed` and repeat only the unresolved question.
 
 Redact private remotes, tokens, secrets in logs/history, raw PR output, and copied snippets.
 

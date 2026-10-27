@@ -26,6 +26,18 @@ permission to perform ordinary reversible steps.
    external side effect automatically when its outcome is unknown.
 8. In the final response, restate material findings rather than relying on interim updates.
 
+## Hard-Gate Answer Binding
+
+When a preflight, safety rule, or selected skill enters `fail_closed`, `blocked`, or
+`awaiting_confirmation` for a named risk, bind the user's next answer to that exact question.
+
+- Show the concrete blocker, affected targets, and proposed narrow action before asking.
+- Resume only after a new direct answer explicitly accepts or resolves that blocker.
+- Approval for a later stage (`review`, PR, merge, deploy), a restatement of the overall goal, or an
+  answer to a different question does not release the current gate.
+- If the reply is ambiguous, keep the gate closed and ask only the unresolved question again. Do
+  not interpret momentum, urgency, or a future-stage instruction as consent for the current write.
+
 ## Boundaries
 
 - Repository-specific PR, worktree, and deploy rules belong to the project workflow skills.

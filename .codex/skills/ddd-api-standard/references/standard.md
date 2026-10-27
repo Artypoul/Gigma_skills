@@ -1,6 +1,6 @@
 # Стандарт проектирования DDD-архитектуры API для инженерного агента
 
-**Версия 3.9 · Проверено 16.08.2026 · Профиль: FastAPI, SQLAlchemy 2.x, PostgreSQL, Alembic — конкретные версии берутся из lockfile и runtime проекта, а не из этого документа**
+**Версия 3.10 · Проверено 02.09.2026 · Профиль: FastAPI, SQLAlchemy 2.x, PostgreSQL, Alembic — конкретные версии берутся из lockfile и runtime проекта, а не из этого документа**
 
 ## 1. Назначение, область применения и доказательства
 
@@ -143,7 +143,7 @@ authenticate/coarse authorize -> open UoW -> load
 
 В multi-tenant системе изоляция данных tenant'ов обеспечивается ниже application-слоя, а не только проверкой прав в нём. Допустимые механизмы: обязательный tenant-фильтр в repositories/query ports, PostgreSQL Row-Level Security, либо физическое разделение — база или схема на tenant'а. При физическом разделении проверяются выбор соединения по tenant'у и сброс состояния при возврате соединения в пул, а требовать вдобавок tenant-колонку не нужно. Выбранный механизм фиксируется как политика проекта.
 
-Alembic autogenerate создаёт только кандидат миграции. Каждая миграция проверяется человеком на data loss, locks, backfill, defaults, длительность и совместимость старой/новой версии; опасные изменения выполняются как expand → backfill/migrate → contract с rehearsal и rollback/forward-fix plan.
+Alembic autogenerate создаёт только кандидат миграции. Каждая миграция проверяется человеком на data loss, locks, backfill, defaults, длительность и совместимость старой/новой версии; опасные изменения выполняются как expand → backfill/migrate → contract с rehearsal и rollback/forward-fix plan. При rename, переносе таблицы между схемами или `SET SCHEMA` до правки составляется inventory всех зависимых объектов: foreign keys, indexes, views/materialized views, triggers и trigger functions, policies, grants, defaults/sequences, ORM mapping и raw SQL со schema-qualified именами. Проверяется не только upgrade пустой схемы, но и upgrade существующих/legacy-строк, запись данных новым кодом, повторный upgrade, а затем безопасный downgrade либо доказанный forward-fix plan; downgrade, который после новых записей теряет данные или нарушает `NOT NULL`/FK, не выдаётся за рабочий rollback. Эти проверки выполняются на целевом PostgreSQL; другая СУБД или skipped integration tests оставляют гарантию `unverified`/`probable` и не закрывают production gate.
 
 ## 7. События и внешние интеграции
 

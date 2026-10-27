@@ -14,8 +14,9 @@ Use this skill to decide which workflow chain to run. It is a router, not a repl
 3. Do not reopen a decision already captured in project memory; if it must change, say so explicitly and ask only about that change.
 4. Prefer local project skills over generic global skills.
 5. If a named skill is available, read its `SKILL.md` before acting.
-6. If the user asked for review, audit, check-up, консилиум, plan-only, or read-only work, end with a report. Do not edit, commit, push, create PRs, merge, or deploy.
+6. If the user asked only for review, audit, check-up, консилиум, plan-only, or read-only work, end with a report. If the same request explicitly says to repair confirmed findings, use `changes-requested`: review first, fix only supported in-scope defects, rerun affected checks, and still do not commit, push, create PRs, merge, or deploy unless separately requested.
 7. If Art says "сделай PR", "оформи PR", or otherwise asks for a PR without saying draft, route it as a GitHub PR that is Ready for review/non-draft. This does not mean merge or deploy.
+8. After a completed task, classify a new user request as continuation, extension, or an independent scope before reusing the old workflow. For an independent feature or investigation, recommend a new Codex task once and carry forward only verified project memory/handoff facts. Do not create that task without an explicit user request. If Art continues in the same task, restate the new scope and completion criterion so the old title/history is not treated as the active contract.
 
 ## Route Matrix
 
@@ -24,7 +25,7 @@ Use this skill to decide which workflow chain to run. It is a router, not a repl
 | "сделай", "реализуй", "добавь", "измени" when the user is asking for code/product changes; multi-file feature, API/UI/data changes | `project-context-bootstrap` -> `feature` -> project plan/review skills -> implementation -> tests/checks -> code review/monster feedback -> finalization |
 | Complex task with several steps, code/research/files/tools, or a requested durable deliverable | `high-agency-execution` -> narrow specialist skill -> `capability-aware-execution` or `agent-session-execution` only when needed |
 | Authorized security review/test, secrets or sensitive data, access-control change, or potentially harmful external effect | `project-context-bootstrap` -> `security-sensitive-execution` -> narrow domain skill -> runtime confirmation and verification |
-| "ревью", "чек ап", "ошибки агента", "посмотри PR" | `project-context-bootstrap` -> code-review stance -> local review skills -> findings-first report |
+| "ревью", "чек ап", "ошибки агента", "посмотри PR" | `project-context-bootstrap` -> code-review stance -> local review skills -> findings-first report; when the same request explicitly includes "исправь/чини", continue with supported in-scope repairs and fresh validation |
 | "смерджил", "merged", "handoff", "чини в PR", "prod ready", deploy state | `project-context-bootstrap` -> `development-handoff` when available |
 | Frontend/UI/forms/responsive/cabinet changes | `project-context-bootstrap` -> local `frontend-plan` or equivalent -> local `frontend-safety-check`/`affordance-review` |
 | Auth/payment/subscription/webhook/user flow | `project-context-bootstrap` -> `ddd-api-standard` when installed and the change touches API contracts, invariants, access rights, money, limits or the data schema -> local flow/data review skills -> `feature` if implementation is needed |
@@ -61,4 +62,4 @@ Keep it short. Once the route is clear, execute the selected workflow instead of
 - If an optional automatic reviewer such as monster/Codex/Claude review is unavailable and project rules allow a local fallback, run a local findings-first monster review, state the limitation, and do not mark the task ready while real findings remain open.
 - Do not create a new PR if the user asked to fix the existing one.
 - Do not broaden product scope silently; ask when several product choices are valid.
-- Do not mark a task ready while CI/review/deploy evidence is unknown.
+- Do not mark a PR/merge/deploy task ready while its required CI/review/deploy evidence is unknown. For a local-only task, distinguish evidence that is genuinely unknown from PR/CI/deploy evidence that is not applicable.

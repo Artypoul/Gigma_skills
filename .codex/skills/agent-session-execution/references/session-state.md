@@ -11,3 +11,11 @@
 | `blocked` | Progress needs user input or external state. | State the exact missing input/state and stop. |
 
 Use state names as internal control, not as unnecessary jargon in every user response.
+
+## Confirmation Binding
+
+An `awaiting_confirmation` or `blocked` state is released only by a reply that directly answers the
+named blocker after the affected targets and risk were shown. For example, after asking whether to
+write over specific dirty files, `потом review, PR, merge и deploy` leaves the state blocked because
+it authorizes no current write. Ask the same narrow question once more; do not advance to
+`ready_to_act` by inference.

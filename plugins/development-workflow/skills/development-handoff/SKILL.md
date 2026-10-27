@@ -1,6 +1,6 @@
 ---
 name: development-handoff
-description: "Manage development handoff between Codex agents: post-merge protocol, same-PR fixes, monster review gates, decision-lock/product-drift checks, prod-ready checks, deploy checks, dirty worktree safety, recovery-aware handoff, and continuation from evidence. Use when the user says merged/смерджил, fix in PR/чини в PR, monster review/монстр ревью, prod ready/продак реди, update branches/обнови ветки, deploy/деплой, handoff/передай смену, decision drift/уехал от решения/свернул от решения, or when continuing an interrupted development task."
+description: "Manage development handoff between Codex agents: mandatory post-merge finalization with safe local merged-branch cleanup, same-PR fixes, monster review gates, decision-lock/product-drift checks, prod-ready checks, deploy checks, dirty worktree safety, recovery-aware handoff, and continuation from evidence. Use immediately, before an acknowledgment-only response, when the user unambiguously reports a completed merge with merged/смерджил/PR смержен or a contextually merge-specific залил; also use for post-merge/после мерджа/финализацию после мерджа/cleanup branches/почисти ветки, fix in PR/чини в PR, monster review/монстр ревью, prod ready/продак реди, update branches/обнови ветки, deploy/деплой, handoff/передай смену, decision drift/уехал от решения/свернул от решения, or when continuing an interrupted development task."
 ---
 
 # Development Handoff
@@ -40,11 +40,24 @@ gh pr view --json url,state,mergedAt,headRefName,baseRefName,statusCheckRollup,r
 
 Read `references/handoff-contract.md` when you need the full template, exact command recipes, prod-ready checklist, or skill/plugin installability checks.
 
+## Hard Trigger Guard
+
+Before composing the first response to a user message, classify an unambiguous merge-completion phrase (`смерджил`, `merged`, `PR смержен`, or `залил` only when the context clearly means merge) as an execution trigger. This guard has priority over treating the message as a status update and over the generic clarification-first rule when repository/PR identity is discoverable.
+
+On a positive trigger:
+
+1. Load this skill and start Quick Snapshot in the same turn when repository/PR identity is discoverable from current context.
+2. Do not send an acknowledgment-only final response.
+3. Do not stop after saying that merge does not authorize deploy; preserve that boundary while still completing post-merge finalization.
+4. Return a final response only with one globally allowed status: `ready` after a verified result, or evidence-backed `partial`, `blocked`, or `unknown`.
+
+Do not trigger on a negation, hypothetical, or question such as `ещё не смерджил`, `если смерджим`, or `как смержить?`. A stop command still takes precedence. Read `references/evaluation-scenarios.md` when validating or changing this trigger.
+
 ## Interpret User Commands
 
-Treat short user phrases as process triggers:
+Treat short user phrases as process triggers after applying the Hard Trigger Guard:
 
-- `смерджил`, `merged`, `залил` -> run post-merge protocol.
+- `смерджил`, `merged`, `PR смержен`, contextually merge-specific `залил`, `после мерджа`, `финализация после мерджа` -> run the complete post-merge protocol in the same turn, including safe local branch cleanup; never acknowledge and stop.
 - `чини в PR`, `чини там же`, `не вижу правки в PR` -> reuse the existing PR branch.
 - `монстр ревью`, `monster review`, `сделай ревью` -> run findings-first review and track fixes.
 - `продак реди?`, `prod ready?` -> answer only after the prod-ready evidence gate.
@@ -57,16 +70,31 @@ Do not ask for clarification when the safe next protocol is obvious.
 
 ## Post-Merge Protocol
 
-When the user says the PR was merged:
+When the user says the PR was merged, treat that message as the trigger for this whole protocol. Do not acknowledge the merge and stop before finalization.
 
-1. Verify PR state with `gh pr view <id> --json state,mergedAt,mergeCommit,url`.
+1. Verify live PR state and exact branch identity with `gh pr view <id> --json state,mergedAt,mergeCommit,url,headRefName,headRefOid,baseRefName`. Continue only when `state` is `MERGED` and `mergedAt` is present.
 2. Run `git fetch --all --prune`.
-3. Check dirty worktree before switching branches.
+3. Check dirty worktree before switching branches. Tracked, staged, unknown, or product files still block switching and cleanup; known generated local artifacts may be left in place when they do not affect branch refs.
 4. Switch to the base branch and run `git pull --ff-only` only when safe.
 5. Check `git status --short --branch` and latest commits.
-6. Check GitHub Actions or required workflows for the merge commit.
-7. If the task involved deploy, check deploy workflow and runtime health using the repository runbook.
-8. Return a short handoff: merged item, updated branch, checks, remaining blockers, next action.
+6. Resolve `scripts/post_merge_cleanup.py` relative to this `SKILL.md`. Run it without `--apply` using the verified `baseRefName`, `headRefName`, and `headRefOid`; inspect every proposed deletion and preservation, then retain the returned `plan_sha256`.
+7. If the preview is safe, rerun the command with `--apply --expected-plan-sha256 <plan_sha256>`. Stop and inspect a new preview if the plan changed. The user's current explicit merge statement authorizes this exact local cleanup only after steps 1–6 succeed. Do not infer authorization from stale chat, CI, or an observed merge alone.
+8. Verify that the base branch remains current, deleted local branches are absent, preserved branches remain, and remote-tracking refs were not mutated by cleanup. If the helper returns `partial` or `unknown`, stop, read back the named refs/config, report the exact state, and never retry deletion blindly.
+9. Check GitHub Actions or required workflows for the merge commit.
+10. If the task involved deploy, check deploy workflow and runtime health using the repository runbook.
+11. Return a short handoff: merged item, updated base, deleted local branches, preserved/blocking branches, checks, remaining blockers, next action.
+
+The cleanup helper removes only:
+
+- the exact local PR head when its tip equals the verified `headRefOid`; this also handles squash/rebase merges without deleting later local commits;
+- every other local branch when Git proves its tip is an ancestor of the updated base.
+
+It must preserve `main`, the base branch, blocking dirty worktrees, unmerged or advanced branches, branches checked out in another worktree, and all remote/remote-tracking branches. The helper may ignore only its explicit allowlist of untracked generated artifact directories; those ignored entries are included in the preview hash and any change before apply requires a fresh preview. Apply must match the exact preview hash and delete refs in one compare-and-swap transaction so plan drift or one stale branch cannot cause partial cleanup. Never replace a blocked helper result with broad `git branch -D`, `git push --delete`, a wildcard, or a cross-shell deletion command.
+
+```bash
+python <skill-dir>/scripts/post_merge_cleanup.py --repo <repo-path> --base <baseRefName> --merged-head <headRefName> --merged-head-oid <headRefOid>
+python <skill-dir>/scripts/post_merge_cleanup.py --repo <repo-path> --base <baseRefName> --merged-head <headRefName> --merged-head-oid <headRefOid> --apply --expected-plan-sha256 <plan_sha256>
+```
 
 Queued or unavailable checks are not green.
 
@@ -149,7 +177,7 @@ When there are local changes:
 1. Classify them as current-task, pre-existing, generated, or unknown.
 2. Never reset, checkout, clean, move, or overwrite unrelated changes without direct permission.
 3. Stage only current-task files.
-4. If dirty files block branch update or PR continuation, report the exact blocker.
+4. If dirty files block branch update or PR continuation, report the exact blocker. Allowlisted generated untracked artifacts may be reported as ignored by cleanup, but must not be deleted unless the user separately asks for filesystem cleanup.
 5. Mention left-over dirty files in the final handoff.
 
 Broad dirty trees after a failed frontend or design transfer are a recovery smell. Do not hide that state; call it out and reduce scope before more implementation.
