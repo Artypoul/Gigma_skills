@@ -92,9 +92,14 @@ if ($InstallHooks) {
     $hookDest = Join-Path $codexHome 'profile-hooks'
     $hookSource = Join-Path $profileRoot 'hooks'
     $hooksJson = Join-Path $codexHome 'hooks.json'
+    $hooksBackup = "$hooksJson.gigma-backup-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
     if ((Test-Path -LiteralPath $hooksJson) -and -not $AdoptHooks) {
         Write-Warning "hooks.json уже существует; хуки не заменены. Для замены: -InstallHooks -AdoptHooks"
     } else {
+        if ((Test-Path -LiteralPath $hooksJson) -and $AdoptHooks -and $PSCmdlet.ShouldProcess($hooksJson, 'Backup existing hooks.json')) {
+            Copy-Item -LiteralPath $hooksJson -Destination $hooksBackup -Force
+            Write-Output "Existing hooks backed up: $hooksBackup"
+        }
         if ($PSCmdlet.ShouldProcess($hookDest, 'Install profile hook scripts')) {
             New-Item -ItemType Directory -Force $hookDest | Out-Null
             Copy-Item -Path (Join-Path $hookSource '*.ps1') -Destination $hookDest -Force
