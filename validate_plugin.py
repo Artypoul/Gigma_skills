@@ -117,7 +117,7 @@ def load_external_plugins(plugin_names: set[str]) -> dict[str, dict]:
             fail(f"external plugin {name!r} needs an HTTPS GitHub URL without credentials or query")
         subdir = source.get("path")
         if source.get("source") == "git-subdir" or subdir is not None:
-            if not isinstance(subdir, str) or not subdir or "\\" in subdir or PurePosixPath(subdir).is_absolute() or any(x in ("", ".", "..") for x in subdir.split("/")):
+            if not isinstance(subdir, str) or not subdir or "\\" in subdir or re.match(r"^[A-Za-z]:", subdir) or PurePosixPath(subdir).is_absolute() or any(x in ("", ".", "..") for x in subdir.split("/")):
                 fail(f"external plugin {name!r} has an invalid repository subdirectory")
         result[name] = record
     return result

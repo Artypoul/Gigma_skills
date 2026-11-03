@@ -77,6 +77,11 @@ class MarketplaceSourcesTests(unittest.TestCase):
         self.external['source'].update(source='git-subdir', path='../outside')
         self.assertTrue(self.run_validation())
 
+    def test_windows_drive_source_path_is_rejected(self):
+        self.external['source'].update(source='git-subdir', path='C:/outside')
+        self.codex['plugins'][1]['source'] = copy.deepcopy(self.external['source'])
+        self.assertTrue(self.run_validation())
+
     def test_credentials_cannot_be_stored_in_source_url(self):
         self.external['source']['url'] = 'https://user:secret@github.com/Artypoul/example.git'
         self.assertTrue(self.run_validation())

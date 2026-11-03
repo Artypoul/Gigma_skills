@@ -38,7 +38,7 @@ The `.codex` fallback mirror and sync scripts still cover only locally maintaine
 
 The installed Codex CLI recognized both new entries, their versions and pinned Git sources through `codex plugin list --marketplace gigma-skills --available --json`. The packages were already installed from their original marketplaces; duplicate installations were deliberately not enabled. This is catalogue discovery and source verification, not a new authentication or live service test.
 
-The catalogue validator now checks the upstream lock, full commit pins, runtime support, version/source consistency, source paths, duplicate ownership and duplicate entries while preserving strict local-path checks. Thirteen regression tests cover valid mixed catalogues and rejected drift/path escapes. They run in CI alongside existing suites.
+The catalogue validator now checks the upstream lock, full commit pins, runtime support, version/source consistency, source paths, duplicate ownership and duplicate entries while preserving strict local-path checks. Fourteen regression tests cover valid mixed catalogues and rejected drift/path escapes, including Windows drive paths. They run in CI alongside existing suites.
 
 Update an upstream SHA and version in the lock and every supported runtime entry together. Run:
 
