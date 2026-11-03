@@ -11,7 +11,7 @@ import hashlib
 import json
 import re
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 ROOT = Path(__file__).resolve().parent
@@ -68,67 +68,110 @@ def is_generated_cache(path: Path, base: Path) -> bool:
     )
 
 
+def load_external_plugins(plugin_names: set[str]) -> dict[str, dict]:
+    """Validate immutable upstream sources without downloading or copying them."""
+    path = ROOT / "external-plugins.lock.json"
+    if not path.is_file():
+        return {}
+    lock = load_json(path)
+    if not isinstance(lock, dict):
+        fail("external-plugins.lock.json must be an object")
+        return {}
+    records = lock.get("plugins")
+    if lock.get("schema_version") != 1 or not isinstance(records, list):
+        fail("external-plugins.lock.json requires schema_version 1 and a plugins list")
+        return {}
+    result: dict[str, dict] = {}
+    for record in records:
+        if not isinstance(record, dict):
+            fail("external plugin lock has a non-object entry")
+            continue
+        name = require_string(record, "name", path)
+        if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name):
+            fail(f"external plugin has invalid name {name!r}")
+        if name in result or name in plugin_names:
+            fail(f"external plugin {name!r} duplicates an existing owner")
+            continue
+        runtimes = record.get("runtimes")
+        if not isinstance(runtimes, list) or not runtimes or any(x not in ("codex", "claude") for x in runtimes) or len(runtimes) != len(set(runtimes)):
+            fail(f"external plugin {name!r} needs unique supported runtimes")
+            record = {**record, "runtimes": []}
+        for key in ("version", "license"):
+            require_string(record, key, path)
+        skills = record.get("skills")
+        if not isinstance(skills, list) or not skills or any(not isinstance(x, str) or not x for x in skills):
+            fail(f"external plugin {name!r} needs non-empty skill names")
+        elif len(skills) != len(set(skills)):
+            fail(f"external plugin {name!r} has duplicate skill names")
+        source = record.get("source")
+        if not isinstance(source, dict):
+            fail(f"external plugin {name!r} needs a source object")
+            result[name] = record
+            continue
+        if source.get("source") not in ("url", "git-subdir"):
+            fail(f"external plugin {name!r} must use a pinned Git source")
+        if not isinstance(source.get("sha"), str) or not re.fullmatch(r"[0-9a-f]{40}", source["sha"]):
+            fail(f"external plugin {name!r} requires a full immutable commit SHA")
+        url = source.get("url")
+        if not isinstance(url, str) or not re.fullmatch(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\.git", url):
+            fail(f"external plugin {name!r} needs an HTTPS GitHub URL without credentials or query")
+        subdir = source.get("path")
+        if source.get("source") == "git-subdir" or subdir is not None:
+            if not isinstance(subdir, str) or not subdir or "\\" in subdir or re.match(r"^[A-Za-z]:", subdir) or PurePosixPath(subdir).is_absolute() or any(x in ("", ".", "..") for x in subdir.split("/")):
+                fail(f"external plugin {name!r} has an invalid repository subdirectory")
+        result[name] = record
+    return result
+
+
 def validate_marketplaces(plugin_names: set[str]) -> None:
-    codex_path = ROOT / ".agents" / "plugins" / "marketplace.json"
-    claude_path = ROOT / ".claude-plugin" / "marketplace.json"
-
-    codex = load_json(codex_path)
-    codex_plugins = codex.get("plugins")
-    if not isinstance(codex_plugins, list):
-        fail(f"{rel(codex_path)} missing plugins list")
-    else:
+    external = load_external_plugins(plugin_names)
+    for runtime, path in (("codex", ROOT / ".agents/plugins/marketplace.json"), ("claude", ROOT / ".claude-plugin/marketplace.json")):
+        data = load_json(path)
+        entries = data.get("plugins")
+        if not isinstance(entries, list):
+            fail(f"{rel(path)} missing plugins list")
+            continue
+        expected = plugin_names | {name for name, record in external.items() if runtime in record["runtimes"]}
         seen: set[str] = set()
-        for entry in codex_plugins:
+        for entry in entries:
             if not isinstance(entry, dict):
-                fail(f"{rel(codex_path)} has non-object plugin entry")
+                fail(f"{rel(path)} has non-object plugin entry")
                 continue
-            name = require_string(entry, "name", codex_path)
+            name = require_string(entry, "name", path)
+            if name in seen:
+                fail(f"{rel(path)} duplicates plugin {name!r}")
             seen.add(name)
+            if name in external:
+                record = external[name]
+                if runtime not in record["runtimes"]:
+                    fail(f"{rel(path)} plugin {name!r} does not support {runtime}")
+                if entry.get("source") != record.get("source"):
+                    fail(f"{rel(path)} plugin {name!r} differs from its locked Git source")
+                if entry.get("version") != record.get("version"):
+                    fail(f"{rel(path)} plugin {name!r} differs from its locked version")
+                require_string(entry, "description", path)
+                continue
             source = entry.get("source")
-            if not isinstance(source, dict) or source.get("source") != "local":
-                fail(f"{rel(codex_path)} plugin {name!r} must use local source")
-                continue
-            source_path = source.get("path")
-            if not isinstance(source_path, str):
-                fail(f"{rel(codex_path)} plugin {name!r} missing source.path")
+            if runtime == "codex":
+                if not isinstance(source, dict) or source.get("source") != "local":
+                    fail(f"{rel(path)} plugin {name!r} must use local source")
+                    continue
+                source = source.get("path")
+            if not isinstance(source, str):
+                fail(f"{rel(path)} plugin {name!r} needs a local source path")
                 continue
             expected_raw = f"./plugins/{name}"
-            if source_path != expected_raw:
-                fail(f"{rel(codex_path)} plugin {name!r} source.path must be {expected_raw!r}")
-            expected_path = (PLUGIN_DIR / name).resolve()
-            resolved_path = (ROOT / source_path).resolve()
-            if resolved_path != expected_path:
-                fail(f"{rel(codex_path)} plugin {name!r} source.path resolves outside plugins/{name}")
-            if not resolved_path.is_dir():
-                fail(f"{rel(codex_path)} plugin {name!r} source path does not exist: {source_path}")
-        if seen != plugin_names:
-            fail(f"{rel(codex_path)} plugins {sorted(seen)} do not match plugin dirs {sorted(plugin_names)}")
-
-    claude = load_json(claude_path)
-    claude_plugins = claude.get("plugins")
-    if not isinstance(claude_plugins, list):
-        fail(f"{rel(claude_path)} missing plugins list")
-    else:
-        seen = set()
-        for entry in claude_plugins:
-            if not isinstance(entry, dict):
-                fail(f"{rel(claude_path)} has non-object plugin entry")
-                continue
-            name = require_string(entry, "name", claude_path)
-            seen.add(name)
-            source = require_string(entry, "source", claude_path)
-            expected_raw = f"./plugins/{name}"
+            resolved = (ROOT / source).resolve()
             if source != expected_raw:
-                fail(f"{rel(claude_path)} plugin {name!r} source must be {expected_raw!r}")
-            expected_path = (PLUGIN_DIR / name).resolve()
-            resolved_path = (ROOT / source).resolve()
-            if resolved_path != expected_path:
-                fail(f"{rel(claude_path)} plugin {name!r} source resolves outside plugins/{name}")
-            if not resolved_path.is_dir():
-                fail(f"{rel(claude_path)} plugin {name!r} source path does not exist: {source}")
-            require_string(entry, "description", claude_path)
-        if seen != plugin_names:
-            fail(f"{rel(claude_path)} plugins {sorted(seen)} do not match plugin dirs {sorted(plugin_names)}")
+                fail(f"{rel(path)} plugin {name!r} source must be {expected_raw!r}")
+            if resolved != (PLUGIN_DIR / name).resolve():
+                fail(f"{rel(path)} plugin {name!r} source resolves outside plugins/{name}")
+            if not resolved.is_dir():
+                fail(f"{rel(path)} plugin {name!r} source path does not exist")
+            if runtime == "claude":
+                require_string(entry, "description", path)
+        if seen != expected:
+            fail(f"{rel(path)} plugins {sorted(seen)} do not match expected {sorted(expected)}")
 
 
 def validate_plugin_manifests(plugin_path: Path) -> None:
@@ -381,7 +424,9 @@ def main() -> int:
             print(f"ERROR: {message}", file=sys.stderr)
         return 1
 
-    print(f"Validation OK: {len(plugin_paths)} plugins, {len(list(PLUGIN_DIR.glob('*/skills/*/SKILL.md')))} skills.")
+    external = load_external_plugins(plugin_names)
+    remote_skills = sum(len(p["skills"]) for p in external.values())
+    print(f"Validation OK: {len(plugin_paths)} local plugins, {len(list(PLUGIN_DIR.glob('*/skills/*/SKILL.md')))} local skills; {len(external)} pinned upstream plugins, {remote_skills} declared upstream skills.")
     return 0
 
 

@@ -61,6 +61,17 @@
       "name": "first-pass-quality",
       "source": "./plugins/first-pass-quality",
       "description": "Phase-aware Task Locks, fresh evidence gates, project-workflow compatibility, bounded delegation, one-shot production authorization, and honest completion. Hooks require pwsh 7 on PATH."
+    },
+    {
+      "name": "gigma-mcp",
+      "version": "0.2.0",
+      "description": "Connect an agent to the Gigma owner MCP through native callback onboarding.",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/Artypoul/gigma-mcp.git",
+        "path": "plugins/gigma-mcp",
+        "sha": "2d9332aa90baa51a09f4d9ef29127c4a2c71979c"
+      }
     }
   ]
 }
