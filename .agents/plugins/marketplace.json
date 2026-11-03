@@ -135,6 +135,61 @@
         "authentication": "ON_INSTALL"
       },
       "category": "Productivity"
+    },
+    {
+      "name": "fable5-codex",
+      "version": "1.2.0",
+      "description": "Complete source-based Fable 5 workflow for Codex, with engineering references and source traceability.",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/Artypoul/claude-fable-5-system-prompt.git",
+        "sha": "d9a557b102309797cf9c028d5d19fde3d9174aa8"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity",
+      "interface": {
+        "displayName": "Fable 5 Codex",
+        "shortDescription": "Complete Fable 5 workflow, references and traceability",
+        "longDescription": "Source-based Fable 5 baseline with local MCP tools to search enabled Codex skills and read registered SKILL.md files. Includes engineering references, the unchanged original archive, traceability ledger and behavioral evaluation. Requires Node.js 20+ and Codex CLI on PATH. Uses the host's actual tools and permissions.",
+        "developerName": "Artypoul",
+        "category": "Productivity",
+        "defaultPrompt": [
+          "Use $fable5-codex:fable5-codex for this task, loading the relevant source-based sections and engineering references."
+        ]
+      }
+    },
+    {
+      "name": "gigma-mcp",
+      "version": "0.2.0",
+      "description": "Connect an agent to the Gigma owner MCP through native callback onboarding.",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/Artypoul/gigma-mcp.git",
+        "path": "plugins/gigma-mcp",
+        "sha": "2d9332aa90baa51a09f4d9ef29127c4a2c71979c"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_USE"
+      },
+      "category": "Productivity",
+      "interface": {
+        "displayName": "Gigma MCP",
+        "shortDescription": "Connect an AI agent to Gigma.",
+        "longDescription": "Connect Codex and compatible agents to the Gigma owner MCP through a native callback flow.",
+        "developerName": "Gigma",
+        "category": "Productivity",
+        "capabilities": [
+          "Read",
+          "Write"
+        ],
+        "defaultPrompt": [
+          "Use Gigma MCP to connect my owner workspace through the native callback flow."
+        ]
+      }
     }
   ]
 }

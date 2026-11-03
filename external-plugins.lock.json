@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "plugins": [
+    {
+      "name": "fable5-codex",
+      "version": "1.2.0",
+      "runtimes": [
+        "codex"
+      ],
+      "source": {
+        "source": "url",
+        "url": "https://github.com/Artypoul/claude-fable-5-system-prompt.git",
+        "sha": "d9a557b102309797cf9c028d5d19fde3d9174aa8"
+      },
+      "skills": [
+        "fable5-codex"
+      ],
+      "license": "MIT; archived third-party prompt retains its upstream ownership notice",
+      "requirements": [
+        "Codex CLI",
+        "Node.js 20+"
+      ],
+      "manifest": ".codex-plugin/plugin.json",
+      "note": "Upstream ships a Codex manifest only; keep the source archive and MCP package in their original repository."
+    },
+    {
+      "name": "gigma-mcp",
+      "version": "0.2.0",
+      "runtimes": [
+        "codex",
+        "claude"
+      ],
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/Artypoul/gigma-mcp.git",
+        "path": "plugins/gigma-mcp",
+        "sha": "2d9332aa90baa51a09f4d9ef29127c4a2c71979c"
+      },
+      "skills": [
+        "gigma-owner-auth",
+        "gigma-owner-investigation",
+        "gigma-owner-project-ops",
+        "gigma-owner-router",
+        "gigma-owner-setup",
+        "gigma-owner-subscriptions"
+      ],
+      "license": "MIT",
+      "requirements": [
+        "Connection to Gigma owner MCP",
+        "Owner callback authentication and original service permissions"
+      ],
+      "manifest": ".codex-plugin/plugin.json"
+    }
+  ]
+}
