@@ -1,0 +1,4 @@
+interface:
+  display_name: "Настройка"
+  short_description: "Расследование сетевых сбоев VPN и VPS-нод"
+  default_prompt: "Примени $vps-support:vps-node-network-setup как сетевую ветку расследования vps-support:vps-troubleshoot: используй общий контекст инцидента, проверь сертификаты и маршрут через ноды и верни доказательства в основной разбор."

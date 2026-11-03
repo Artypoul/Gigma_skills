@@ -21,6 +21,9 @@ jobs:
       - name: Validate plugins and Codex mirror
         run: python validate_plugin.py
 
+      - name: Run VPS network evidence regression tests
+        run: python -m unittest discover -s plugins/vps-support/tests -p "test_*.py"
+
       - name: Run Codex Toolkit review regression tests
         run: python -m unittest discover -s plugins/codex-toolkit/tests -p "test_*.py"
 
