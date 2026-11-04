@@ -1,0 +1,7 @@
+user_id,event,date
+1,signup,2026-01-01
+1,visit,2026-01-02
+2,signup,2026-01-01
+2,visit,2026-01-08
+3,signup,2026-01-02
+3,visit,2026-01-09

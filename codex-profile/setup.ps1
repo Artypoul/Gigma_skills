@@ -1,6 +1,9 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [string]$CodexHome = (Join-Path $HOME '.codex'),
+    [string]$CodexHome = $(if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME '.codex' }),
+    [ValidateSet('Standard','FableSuperpowers')][string]$Workflow = 'Standard',
+    [switch]$AdoptMarketplace,
+    [switch]$Retry,
     [switch]$InstallHooks,
     [switch]$AdoptGlobalAgents,
     [switch]$AdoptHooks
@@ -14,6 +17,17 @@ $skillsDest = Join-Path $codexHome 'skills'
 $manifestPath = Join-Path $codexHome '.gigma-skills-profile-manifest'
 $agentsSource = Join-Path $profileRoot 'global-AGENTS.md'
 $agentsDest = Join-Path $codexHome 'AGENTS.md'
+
+if ($Workflow -eq 'FableSuperpowers') {
+    if ($InstallHooks -or $AdoptGlobalAgents -or $AdoptHooks) {
+        throw 'Legacy hook/adoption options apply to Workflow Standard. FableSuperpowers preserves existing rules and hooks.'
+    }
+    $taskInstaller = Join-Path $profileRoot 'fable-superpowers/scripts/Install-FableSuperpowers.ps1'
+    & $taskInstaller -CodexHome $codexHome -MarketplaceRoot $repoRoot -AdoptMarketplace:$AdoptMarketplace -Retry:$Retry -WhatIf:$WhatIfPreference
+    exit $LASTEXITCODE
+}
+if ($AdoptMarketplace) { throw 'AdoptMarketplace applies only to Workflow FableSuperpowers.' }
+if ($Retry) { throw 'Retry applies only to Workflow FableSuperpowers.' }
 
 New-Item -ItemType Directory -Force $codexHome, $skillsDest | Out-Null
 

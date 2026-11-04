@@ -95,5 +95,48 @@ class MarketplaceSourcesTests(unittest.TestCase):
         self.assertTrue(self.run_validation())
 
 
+class SuperpowersCatalogueTests(unittest.TestCase):
+    """The portable profile consumes the complete Codex-only upstream package."""
+
+    def setUp(self):
+        self.root = Path(__file__).resolve().parents[1]
+        self.lock = json.loads((self.root / 'external-plugins.lock.json').read_text(encoding='utf-8'))
+        self.codex = json.loads((self.root / '.agents/plugins/marketplace.json').read_text(encoding='utf-8'))
+        self.claude = json.loads((self.root / '.claude-plugin/marketplace.json').read_text(encoding='utf-8'))
+
+    def superpowers(self):
+        entries = [entry for entry in self.lock['plugins'] if entry['name'] == 'superpowers']
+        self.assertEqual(len(entries), 1)
+        return entries[0]
+
+    def test_canonical_whole_package_has_an_immutable_source(self):
+        entry = self.superpowers()
+        self.assertEqual(entry['source']['source'], 'url')
+        self.assertEqual(entry['source']['url'], 'https://github.com/obra/superpowers.git')
+        self.assertRegex(entry['source']['sha'], r'^[0-9a-f]{40}$')
+        self.assertNotIn('path', entry['source'])
+        self.assertEqual(entry['manifest'], '.codex-plugin/plugin.json')
+        self.assertEqual(entry['license'], 'MIT')
+
+    def test_native_entry_is_codex_only_and_matches_the_lock(self):
+        entry = self.superpowers()
+        self.assertEqual(entry['runtimes'], ['codex'])
+        selected = [item for item in self.codex['plugins'] if item['name'] == 'superpowers']
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0]['source'], entry['source'])
+        self.assertEqual(selected[0]['version'], entry['version'])
+        self.assertFalse(any(item['name'] == 'superpowers' for item in self.claude['plugins']))
+
+    def test_upstream_skills_are_declared_without_a_second_local_owner(self):
+        entry = self.superpowers()
+        skills = entry['skills']
+        self.assertEqual(len(skills), len(set(skills)))
+        self.assertTrue({'using-superpowers', 'systematic-debugging', 'test-driven-development',
+            'executing-plans', 'verification-before-completion'}.issubset(skills))
+        self.assertFalse((self.root / 'plugins/superpowers').exists())
+        for name in skills:
+            self.assertFalse((self.root / '.codex/skills' / name).exists(), name)
+
+
 if __name__ == '__main__':
     unittest.main()

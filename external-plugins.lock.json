@@ -24,6 +24,41 @@
       "note": "Upstream ships a Codex manifest only; keep the source archive and MCP package in their original repository."
     },
     {
+      "name": "superpowers",
+      "version": "7.0.2",
+      "runtimes": [
+        "codex"
+      ],
+      "source": {
+        "source": "url",
+        "url": "https://github.com/obra/superpowers.git",
+        "sha": "22f0b463e7a5e579904dd6211a520321035526f7"
+      },
+      "skills": [
+        "brainstorming",
+        "diagnosing-superpowers",
+        "dispatching-parallel-agents",
+        "executing-plans",
+        "finishing-a-development-branch",
+        "receiving-code-review",
+        "requesting-code-review",
+        "subagent-driven-development",
+        "systematic-debugging",
+        "test-driven-development",
+        "using-git-worktrees",
+        "using-superpowers",
+        "verification-before-completion",
+        "writing-plans",
+        "writing-skills"
+      ],
+      "license": "MIT",
+      "requirements": [
+        "Codex CLI"
+      ],
+      "manifest": ".codex-plugin/plugin.json",
+      "note": "Complete upstream package. The Codex manifest declares an empty hooks object; this entry is intentionally absent from the Claude catalogue. Fable/Superpowers routing is installed separately by codex-profile."
+    },
+    {
       "name": "gigma-mcp",
       "version": "0.2.0",
       "runtimes": [
