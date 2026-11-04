@@ -34,7 +34,13 @@ New installations may select `fable5-codex@gigma-skills` or `gigma-mcp@gigma-ski
 
 At the owner's explicit request, the Fable entry and external lock now select version `1.3.0` at commit `fb941d7a10c816a77a8a67efd4c6abcec209542d` of the original repository. The initial audit figures and 1.2.0 source above describe the earlier snapshot. The updated pin includes the complete 1.3.0 package, its update/rollback helpers, bundled MCP artifacts and licence notices. Fable remains Codex-only; no installed profile or authentication is switched by this catalogue change.
 
-Upstream `main` has subsequently advanced to 1.3.1 with a Windows busy-cache rollback fix. The immutable pin deliberately retains the requested 1.3.0 version rather than following `main`. Installing this entry does not include that later fix; the catalogue pin is not a claim that every local profile currently runs 1.3.0.
+Upstream `main` had subsequently advanced to 1.3.1 with a Windows busy-cache rollback fix. That update deliberately retained the requested 1.3.0 version rather than following `main`; the catalogue pin was not a claim that every local profile ran 1.3.0.
+
+## Follow-up: Fable 1.3.2 catalogue pin
+
+After confirming that the separately installed local profile already runs 1.3.2, the owner explicitly selected **1.3.2** as the target. Both the Codex entry and external lock now pin the complete original package to commit `eaf7ef498b203143fd97399339e578552ae53b43`, whose manifest advertises 1.3.2.
+
+This includes the Windows busy-cache rollback fix, stale-recovery serialization and exact Git-package byte verification. The Git source remains immutable; updating this catalogue does not switch an installed profile or change authentication.
 
 Fable requires Node.js 20+ and a compatible Codex CLI. Gigma MCP retains the original owner callback flow and service permissions. Listing a package does not authenticate the user or provide missing host tools.
 
