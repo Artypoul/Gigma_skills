@@ -36,11 +36,11 @@ At the owner's explicit request, the Fable entry and external lock now select ve
 
 Upstream `main` had subsequently advanced to 1.3.1 with a Windows busy-cache rollback fix. That update deliberately retained the requested 1.3.0 version rather than following `main`; the catalogue pin was not a claim that every local profile ran 1.3.0.
 
-## Follow-up: Fable 1.3.1 catalogue pin
+## Follow-up: Fable 1.3.2 catalogue pin
 
-The next explicit owner request selects version `1.3.1` at commit `f49602f78fe017f5f9116b778303bba309d6c340`, the last upstream revision whose manifest advertises exactly 1.3.1. Both the Codex entry and external lock now select that complete original package, including the Windows busy-cache rollback fix.
+After confirming that the separately installed local profile already runs 1.3.2, the owner explicitly selected **1.3.2** as the target. Both the Codex entry and external lock now pin the complete original package to commit `eaf7ef498b203143fd97399339e578552ae53b43`, whose manifest advertises 1.3.2.
 
-At verification time, the separately installed local profile and upstream main already advertised 1.3.2. That later release adds stale-recovery serialization and exact Git-package byte verification. Those subsequent changes are not included in the explicitly requested 1.3.1 pin. This catalogue update does not switch an installed profile or change authentication.
+This includes the Windows busy-cache rollback fix, stale-recovery serialization and exact Git-package byte verification. The Git source remains immutable; updating this catalogue does not switch an installed profile or change authentication.
 
 Fable requires Node.js 20+ and a compatible Codex CLI. Gigma MCP retains the original owner callback flow and service permissions. Listing a package does not authenticate the user or provide missing host tools.
 
