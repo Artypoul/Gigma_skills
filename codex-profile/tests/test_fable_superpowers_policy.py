@@ -23,7 +23,7 @@ class PolicyTests(unittest.TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.base = Path(temporary.name)
+        self.base = Path(temporary.name).resolve()
         self.home = self.base / "custom home with O'Brien"
         self.home.mkdir()
         self.root = self.home / "local-plugins" / "fable-superpowers"

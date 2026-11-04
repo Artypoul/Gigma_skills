@@ -32,7 +32,11 @@ class PortableProfileTests(unittest.TestCase):
             root=Path(td);scripts=self.make_spy(root)
             home=root/"other user's profile";marketplace=root/'Gigma Skills'
             args=self.invoke(scripts/'Install-FableSuperpowers.ps1','-CodexHome',home,'-MarketplaceRoot',marketplace,'-WhatIf')
-            self.assertEqual(args,['plan','--home',str(home),'--marketplace-root',str(marketplace)])
+            self.assertEqual(args[:2],['plan','--home'])
+            self.assertEqual(args[3],'--marketplace-root')
+            self.assertEqual(len(args),5)
+            self.assertEqual(Path(args[2]).resolve(),home.resolve())
+            self.assertEqual(Path(args[4]).resolve(),marketplace.resolve())
             self.assertFalse(home.exists())
 
     def test_profile_workflow_routes_to_canonical_installer_without_legacy_rules(self):
@@ -42,7 +46,11 @@ class PortableProfileTests(unittest.TestCase):
             shutil.copy2(REPO/'codex-profile/setup.ps1',profile)
             home=root/'isolated home'
             args=self.invoke(profile/'setup.ps1','-CodexHome',home,'-Workflow','FableSuperpowers','-WhatIf')
-            self.assertEqual(args,['plan','--home',str(home),'--marketplace-root',str(root)])
+            self.assertEqual(args[:2],['plan','--home'])
+            self.assertEqual(args[3],'--marketplace-root')
+            self.assertEqual(len(args),5)
+            self.assertEqual(Path(args[2]).resolve(),home.resolve())
+            self.assertEqual(Path(args[4]).resolve(),root.resolve())
             self.assertFalse(home.exists())
 
     def test_update_launcher_passes_selected_codex_home(self):
@@ -52,7 +60,9 @@ class PortableProfileTests(unittest.TestCase):
             (root/'update.py').write_text('import json,sys; print(json.dumps(sys.argv[1:]))',encoding='utf-8')
             home=root/'custom home'
             args=self.invoke(root/'Update-Superpowers.ps1','-Action','check','-CodexHome',home)
-            self.assertEqual(args,['check','--home',str(home)])
+            self.assertEqual(args[:2],['check','--home'])
+            self.assertEqual(len(args),3)
+            self.assertEqual(Path(args[2]).resolve(),home.resolve())
 
 
 if __name__=='__main__':unittest.main()

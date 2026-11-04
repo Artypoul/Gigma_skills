@@ -400,7 +400,7 @@ class CompatibilityUnitTests(unittest.TestCase):
             c.tdd_ordering('bug_fix',fixture,[items[0],red,green,items[2]])
 
     def test_hash_and_diff_reads_are_not_writes_to_mentioned_source(self):
-        fixture=Path('C:/fixture')
+        fixture=Path(tempfile.gettempdir()).resolve()/'fixture'
         commands=[
             "$planPath = Join-Path (Get-Location) 'APPROVED_PLAN.md'; $planText = [System.IO.File]::ReadAllText($planPath); [System.IO.File]::WriteAllText($planPath, $planText.Replace('- [ ]', '- [x]')); $reviewDir = Join-Path (Get-Location) '.superpowers/sdd/APPROVED_PLAN'; $reviewDiff = git diff -- invoice_helpers.py invoice_cli.py tests/test_invoice_helpers.py; [System.IO.File]::WriteAllLines((Join-Path $reviewDir 'review.diff'), [string[]]$reviewDiff); Get-FileHash -LiteralPath 'invoice_helpers.py','invoice_cli.py'",
             "Add-Content -LiteralPath '.superpowers/sdd/APPROVED_PLAN/progress.md' -Value 'Final review complete'; git diff --check; $reviewFiles = @('invoice_helpers.py','invoice_cli.py'); Get-FileHash -LiteralPath $reviewFiles",
