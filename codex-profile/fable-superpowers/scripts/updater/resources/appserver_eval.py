@@ -313,14 +313,27 @@ def public_child_reports(snapshots, messages, collab):
         for message in messages.values():
             if message.get("thread_id") == child_id:
                 found[message["id"]] = message
+        observed = dict(found)
+
+        def snapshot_report(item):
+            # Only a streamed completion supplies chronology. A history snapshot
+            # may enrich the same completed message, but cannot timestamp a new
+            # or conflicting verdict with another message's receipt.
+            report = {key: value for key, value in item.items() if key != "event_line"}
+            live = observed.get(item["id"])
+            if (live and item.get("text") == live.get("text")
+                    and item.get("phase") in (None, live.get("phase"))):
+                report.update(live)
+            return report
+
         for turn in snapshot.get("thread", {}).get("turns", []):
             for item in turn.get("items", []):
                 if item.get("type") == "agentMessage":
-                    found[item["id"]] = item
+                    found[item["id"]] = snapshot_report(item)
         for entry in snapshot.get("items", []):
             item = entry.get("item", {})
             if item.get("type") == "agentMessage":
-                found[item["id"]] = item
+                found[item["id"]] = snapshot_report(item)
         for call in collab.values():
             state = call.get("agentsStates", {}).get(child_id, {})
             if state.get("message"):

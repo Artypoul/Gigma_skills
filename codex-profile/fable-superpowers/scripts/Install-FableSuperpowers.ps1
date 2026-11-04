@@ -2,7 +2,8 @@
 param(
     [string]$CodexHome = $(if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path ([Environment]::GetFolderPath('UserProfile')) '.codex' }),
     [string]$MarketplaceRoot,
-    [switch]$AdoptMarketplace
+    [switch]$AdoptMarketplace,
+    [switch]$Retry
 )
 
 $ErrorActionPreference = 'Stop'
@@ -30,5 +31,6 @@ if (-not $WhatIfPreference) {
 $taskArguments = @('-B', (Join-Path $PSScriptRoot 'bootstrap.py'), $taskAction, '--home', $taskHome)
 if ($MarketplaceRoot) { $taskArguments += @('--marketplace-root', [IO.Path]::GetFullPath($MarketplaceRoot)) }
 if ($AdoptMarketplace) { $taskArguments += '--adopt-marketplace' }
+if ($Retry) { $taskArguments += '--retry' }
 & $taskPython @taskArguments
 exit $LASTEXITCODE

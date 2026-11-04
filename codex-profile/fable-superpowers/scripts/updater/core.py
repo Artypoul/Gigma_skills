@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
@@ -74,6 +74,23 @@ def atomic_write(path, data, expected=None):
 def write_json(path, value):
     atomic_write(path, (json.dumps(value,ensure_ascii=False,indent=2)+'\n').encode())
 
+def hold_receipt(signature, report, checks):
+    """Execution failures cool down; behavioral and legacy holds stay stable."""
+    now=datetime.now(timezone.utc)
+    receipt={'signature':signature,'report':str(report),'retryable':checks.get('retryable') is True,
+        'checked_at_utc':now.isoformat()}
+    if receipt['retryable']:
+        receipt['retry_after_utc']=(now+timedelta(hours=1)).isoformat()
+    return receipt
+
+def held_receipt_applies(receipt, signature, *, retry=False):
+    if retry or receipt.get('signature')!=signature:return False
+    if receipt.get('retryable') is True and receipt.get('retry_after_utc'):
+        try:
+            return datetime.now(timezone.utc)<datetime.fromisoformat(receipt['retry_after_utc'])
+        except (ValueError,TypeError):pass
+    return True
+
 @contextmanager
 def exclusive_lock(path):
     path = Path(path)
@@ -102,11 +119,12 @@ def exclusive_lock(path):
                 fcntl.flock(lock, fcntl.LOCK_UN)
 
 class Manager:
-    def __init__(self, root, home, backend, compatibility, latest, stage, failpoint=None, recovery=None):
+    def __init__(self, root, home, backend, compatibility, latest, stage, failpoint=None, recovery=None, retry=False):
         self.root, self.home = Path(root).resolve(), Path(home).resolve()
         self.backend, self.compatibility = backend, compatibility
         self.latest, self.stage, self.failpoint = latest, stage, failpoint
         self.recovery = recovery
+        self.retry = retry
         self.marketplace = self.root / '.agents/plugins/marketplace.json'
         self.state_dir = self.root / 'updates'
         self.journal = self.state_dir / 'transaction.json'
@@ -133,6 +151,13 @@ class Manager:
     def check_preferences(self, before):
         if self.preferences()!=before:
             raise Conflict('Global instructions or settings changed; update activation aborted.')
+
+    def backend_context(self):
+        return deepcopy(self.backend.context()) if hasattr(self.backend,'context') else None
+
+    def check_context(self, before):
+        if self.backend_context()!=before:
+            raise Conflict('Verification backend context changed; compatibility evidence is no longer current.')
 
     def fault(self, point):
         if self.failpoint:
@@ -240,12 +265,13 @@ class Manager:
             release=self.latest()
             if version_key(release['version'])<=version_key(old_version):
                 return {'status':'unchanged','version':old_version,'latest':release['version']}
-            context={'release':release,'preferences':before,'backend':self.backend.context() if hasattr(self.backend,'context') else None}
+            verified_context=self.backend_context()
+            context={'release':release,'preferences':before,'backend':verified_context}
             signature=hashlib.sha256(json.dumps(context,sort_keys=True).encode()).hexdigest()
             held_file=self.state_dir/'held.json'
             if held_file.exists():
                 held=json.loads(held_file.read_text(encoding='utf-8'))
-                if held.get('signature')==signature:
+                if held_receipt_applies(held,signature,retry=self.retry):
                     return {'status':'held','version':old_version,'candidate':release['version'],'new_failure':False,'report':held['report']}
             stamp=datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')+'-'+uuid.uuid4().hex[:8]
             run_dir=self.state_dir/'runs'/stamp
@@ -266,11 +292,12 @@ class Manager:
             checks=self.compatibility(candidate,run_dir/'compatibility',self.home)
             if checks.get('status')!='passed':
                 write_json(run_dir/'rejected.json',{'reason':'compatibility_failed','checks':checks})
-                write_json(held_file,{'signature':signature,'report':str(run_dir/'rejected.json')})
+                write_json(held_file,hold_receipt(signature,run_dir/'rejected.json',checks))
                 return {'status':'held','version':old_version,'candidate':candidate['version'],'reason':'compatibility_failed','new_failure':True,'report':str(run_dir/'rejected.json')}
             if inventory(candidate_path)!=files:
                 raise UpdateError('Candidate changed during compatibility verification.')
             self.check_preferences(before)
+            self.check_context(verified_context)
             if self.marketplace.read_bytes()!=old_bytes or inventory(old_source)!=old_files:
                 raise Conflict('Active package source changed during verification.')
             destination=self.root/'packages'/(candidate['version']+'-'+candidate['commit'][:12])
@@ -301,11 +328,12 @@ class Manager:
                 raise Conflict('Native installation changed during compatibility verification; activation aborted.')
             if candidate['version'] in old_installation['caches'] and old_installation['caches'][candidate['version']]!=files:
                 raise Conflict('Native candidate cache differs from the verified package; activation aborted.')
-            transaction={'phase':'prepared','old_version':old_version,'new_version':candidate['version'],'old_source':str(old_source),'new_source':str(destination),'old_inventory':old_files,'new_inventory':files,'old_installation':old_installation,'old_marketplace_hex':old_bytes.hex(),'new_marketplace_hex':new_bytes.hex(),'old_provenance_hex':old_provenance.hex() if old_provenance is not None else None,'new_provenance_hex':new_provenance.hex(),'backup':str(backup),'candidate':candidate,'compatibility':checks,'preferences_sha256':before['agents_sha256']}
+            transaction={'phase':'prepared','old_version':old_version,'new_version':candidate['version'],'old_source':str(old_source),'new_source':str(destination),'old_inventory':old_files,'new_inventory':files,'old_installation':old_installation,'old_marketplace_hex':old_bytes.hex(),'new_marketplace_hex':new_bytes.hex(),'old_provenance_hex':old_provenance.hex() if old_provenance is not None else None,'new_provenance_hex':new_provenance.hex(),'backup':str(backup),'candidate':candidate,'compatibility':checks,'preferences_sha256':before['agents_sha256'],'verification_context':verified_context}
             write_json(self.journal,transaction)
             try:
                 self.check_preferences(before)
                 self.check_installation(transaction)
+                self.check_context(verified_context)
                 atomic_write(self.marketplace,new_bytes,expected=old_bytes)
                 transaction['phase']='switched';write_json(self.journal,transaction)
                 self.fault('after_pointer')
@@ -319,9 +347,12 @@ class Manager:
                 health=self.backend.health(destination,candidate['version'],files)
                 self.fault('after_health')
                 self.check_preferences(before)
+                self.check_context(verified_context)
                 if old_provenance is None and provenance_path.exists(): raise Conflict('Provenance appeared concurrently.')
                 atomic_write(provenance_path,new_provenance,expected=old_provenance)
                 self.fault('after_provenance')
+                self.check_context(verified_context)
+                self.check_preferences(before)
                 transaction.update(phase='complete',health=health)
                 write_json(self.journal,transaction)
                 return {'status':'updated','from':old_version,'version':candidate['version'],'backup':str(backup),'checks':checks,'health':health}

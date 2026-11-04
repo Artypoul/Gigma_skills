@@ -15,6 +15,7 @@ def main():
     parser.add_argument('action',choices=['run','check','recover'])
     parser.add_argument('--root',type=Path,default=Path(__file__).resolve().parent.parent)
     parser.add_argument('--home',type=Path,default=Path(os.environ.get('CODEX_HOME') or Path.home()/'.codex'))
+    parser.add_argument('--retry',action='store_true',help='Ignore a cached compatibility hold and rerun all verification gates.')
     args=parser.parse_args()
     root,home=args.root.resolve(),args.home.resolve()
     try:
@@ -29,7 +30,7 @@ def main():
         else:
             from compatibility import run_compatibility,recover_trust_leases
             recovery=lambda:recover_trust_leases(root/'updates/runs',home)
-            manager=Manager(root,home,backend,run_compatibility,latest_release,stage_release,recovery=recovery)
+            manager=Manager(root,home,backend,run_compatibility,latest_release,stage_release,recovery=recovery,retry=args.retry)
             if args.action=='recover':
                 from core import exclusive_lock
                 with exclusive_lock(root/'updates/update.lock'):

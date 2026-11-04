@@ -19,6 +19,7 @@ from core import Conflict, exclusive_lock, inventory, write_json
 class Backend:
     def __init__(self, home):
         self.home=home; self.rows=[]; self.registries=[]; self.calls=[]; self.fail_health=False
+        self.fable_runtime='original'
     def installed(self): return self.rows.copy()
     def marketplaces(self): return self.registries.copy()
     def register_marketplace(self, root):
@@ -45,7 +46,7 @@ class Backend:
         self.calls.append(('remove',plugin));self.rows=[x for x in self.rows if x['pluginId']!=plugin]
     def remove_marketplace(self,name):
         self.calls.append(('unregister',name));self.registries=[x for x in self.registries if x['name']!=name]
-    def context(self): return {'codex':'test','fable_version':'1.3.2','validator_hashes':{'test':'1'}}
+    def context(self): return {'codex':'test','fable_version':'1.3.2','validator_hashes':{'test':'1'},'fable_runtime':self.fable_runtime}
     def health(self,*args):
         self.calls.append(('health',))
         if self.fail_health:raise RuntimeError('bad native health')
@@ -109,6 +110,67 @@ class SetupTests(unittest.TestCase):
     def test_failed_gate_holds_before_activation(self):
         result=self.setup(compatibility=lambda *a,**k:{'status':'failed'}).install()
         self.assertEqual(result['status'],'held');self.assertFalse(any(x['pluginId'].startswith('superpowers@') for x in self.backend.rows))
+    def test_backend_change_during_trials_aborts_before_initial_activation(self):
+        def change(*args,**kwargs):self.backend.fable_runtime='same-version edit';return {'status':'passed'}
+        with self.assertRaisesRegex(Conflict,'context'):
+            self.setup(compatibility=change).install()
+        self.assertFalse(any(row['name']=='superpowers' for row in self.backend.rows))
+        self.assertEqual(self.backend.fable_runtime,'same-version edit')
+
+    def test_backend_change_during_initial_health_rolls_back_only_superpowers(self):
+        def health(*args):self.backend.fable_runtime='updated Fable';return {'status':'healthy'}
+        self.backend.health=health
+        self.assertEqual(self.setup().install()['status'],'rolled_back')
+        self.assertFalse(any(row['name']=='superpowers' for row in self.backend.rows))
+        self.assertEqual(self.backend.fable_runtime,'updated Fable')
+
+    def test_warm_health_context_change_does_not_publish_or_reuse_proof(self):
+        self.setup().install();receipt=self.root/'updates/bootstrap-verified.json';original=receipt.read_bytes()
+        def health(*args):self.backend.fable_runtime='new runtime';return {'status':'healthy'}
+        self.backend.health=health
+        with self.assertRaisesRegex(Conflict,'context'):self.setup().install()
+        self.assertEqual(receipt.read_bytes(),original)
+        receipt.unlink();self.backend.fable_runtime='original'
+        with self.assertRaisesRegex(Conflict,'context'):
+            self.setup(compatibility=lambda *a,**kw:{'status':'passed'}).install()
+        self.assertFalse(receipt.exists());self.assertTrue(any(row['name']=='superpowers' for row in self.backend.rows))
+
+    def test_transient_bootstrap_hold_expires_and_retries_full_gate(self):
+        calls=[]
+        def fail(*args,**kwargs):calls.append(True);return {'status':'failed','retryable':True}
+        first=self.setup(compatibility=fail).install();second=self.setup(compatibility=fail).install()
+        self.assertTrue(first['new_failure']);self.assertFalse(second['new_failure']);self.assertEqual(calls,[True])
+        held=self.root/'updates/bootstrap-held.json';receipt=json.loads(held.read_text());self.assertIn('retry_after_utc',receipt)
+        receipt['retry_after_utc']='2000-01-01T00:00:00+00:00';write_json(held,receipt)
+        self.assertEqual(self.setup().install()['status'],'installed');self.assertEqual(len(self.checks),1)
+
+    def test_explicit_bootstrap_retry_rechecks_and_still_holds_rejected_candidate(self):
+        calls=[]
+        def fail(*args,**kwargs):calls.append(True);return {'status':'failed','retryable':False}
+        self.setup(compatibility=fail).install();self.setup(compatibility=fail).install()
+        self.assertEqual(calls,[True])
+        result=self.setup(compatibility=fail,retry=True).install()
+        self.assertTrue(result['new_failure']);self.assertEqual(calls,[True,True])
+        self.assertFalse(any(row['name']=='superpowers' for row in self.backend.rows))
+
+    def test_warm_rejected_context_hold_retries_only_when_requested_or_expired(self):
+        self.setup().install();(self.root/'updates/bootstrap-verified.json').unlink();calls=[]
+        def fail(*args,**kwargs):calls.append(True);return {'status':'failed','retryable':True}
+        self.assertTrue(self.setup(compatibility=fail).install()['new_failure'])
+        self.assertFalse(self.setup(compatibility=fail).install()['new_failure']);self.assertEqual(calls,[True])
+        held=self.root/'updates/bootstrap-held.json';receipt=json.loads(held.read_text())
+        receipt['retry_after_utc']='2000-01-01T00:00:00+00:00';write_json(held,receipt)
+        self.assertTrue(self.setup(compatibility=fail).install()['new_failure']);self.assertEqual(calls,[True,True])
+        self.assertTrue(self.setup(compatibility=fail,retry=True).install()['new_failure']);self.assertEqual(len(calls),3)
+        self.assertFalse((self.root/'updates/bootstrap-verified.json').exists())
+
+    def test_bootstrap_cli_forwards_explicit_retry(self):
+        with patch.object(bootstrap,'Setup') as factory:
+            factory.return_value.install.return_value={'status':'held'}
+            with patch('builtins.print'):
+                self.assertEqual(bootstrap.main(['install','--home',str(self.home),'--retry']),2)
+            self.assertTrue(factory.call_args.kwargs['retry'])
+
     def test_failed_health_removes_only_owned_superpowers(self):
         self.backend.fail_health=True;result=self.setup().install();self.assertEqual(result['status'],'rolled_back')
         self.assertIn(('remove','superpowers@gigma-skills'),self.backend.calls)

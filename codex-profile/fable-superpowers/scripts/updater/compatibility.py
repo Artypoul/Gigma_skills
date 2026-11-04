@@ -1066,10 +1066,12 @@ def _execute(candidate: dict, run_root: Path, codex_home: Path, *, models: bool,
     run_root.mkdir(parents=True)
     policy=codex_home/'AGENTS.md'
     policy_hash=digest(policy)
-    result={'passed':False,'status':'failed','candidate_version':candidate.get('version'),'policy_sha256':policy_hash,'cases':{},'errors':[]}
+    result={'passed':False,'status':'failed','candidate_version':candidate.get('version'),'policy_sha256':policy_hash,'cases':{},'errors':[],'retryable':False}
     lease=None
+    candidate_prepared=False
     try:
         prepare_marketplace(candidate)
+        candidate_prepared=True
         active_ids=tomllib.loads((codex_home/'config.toml').read_text(encoding='utf-8-sig')).get('plugins',{})
         fixtures,outside=prepare_fixtures(candidate,run_root,active_ids)
         config_hashes={name:digest(path/'.codex/config.toml') for name,path in fixtures.items()}
@@ -1086,18 +1088,25 @@ def _execute(candidate: dict, run_root: Path, codex_home: Path, *, models: bool,
                         name,fixture=futures[future]
                         try:
                             native=future.result()
+                            if native.get('status')!='completed':
+                                raise RuntimeError('Native compatibility task did not complete.')
+                        except Exception as error:
+                            result['cases'][name]={'passed':False,'retryable':True,'error':str(error)[:1000]}
+                            continue
+                        try:
                             if digest(fixture/'.codex/config.toml')!=config_hashes[name]:
                                 raise RuntimeError('Candidate selection configuration changed during the trial.')
                             result['cases'][name]=assess_case(name,fixture,native,run_root/'observations'/name,selected['candidate_skills'],selected['fable_skill'],codex_home=codex_home)
                         except Exception as error:
-                            result['cases'][name]={'passed':False,'error':str(error)[:1000]}
+                            result['cases'][name]={'passed':False,'retryable':False,'error':str(error)[:1000]}
                 after=_native_catalog(outside,run_root/'preflight/outside-final',codex_home)
                 if catalogue_fingerprint(after)!=selected['outside_fingerprint']:
                     raise RuntimeError('Candidate trials changed the active global skill source.')
             result['passed']=all(case.get('passed') for case in result['cases'].values()) if models else True
             result['status']='passed' if result['passed'] else 'failed'
     except Exception as error:
-        result['errors'].append({'type':type(error).__name__,'message':str(error)[:1500]})
+        retryable=not (not candidate_prepared and isinstance(error,ValueError))
+        result['errors'].append({'type':type(error).__name__,'message':str(error)[:1500],'retryable':retryable})
         result['passed']=False
         result['status']='failed'
     finally:
@@ -1106,7 +1115,9 @@ def _execute(candidate: dict, run_root: Path, codex_home: Path, *, models: bool,
         if not result['policy_unchanged']:
             result['passed']=False
             result['status']='failed'
-            result['errors'].append({'type':'SettingsChanged','message':'Global AGENTS changed during compatibility testing; it was not overwritten.'})
+            result['errors'].append({'type':'SettingsChanged','message':'Global AGENTS changed during compatibility testing; it was not overwritten.','retryable':False})
+        failures=[case for case in result['cases'].values() if not case.get('passed')]+result['errors']
+        result['retryable']=result['status']!='passed' and bool(failures) and all(failure.get('retryable') is True for failure in failures)
         result['report_path']=str(run_root/'compatibility.json')
         _json_write(run_root/'compatibility.json',result)
     return result

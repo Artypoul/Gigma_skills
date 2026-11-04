@@ -54,11 +54,38 @@ class NativeIsolationTests(unittest.TestCase):
     def test_context_and_health_reuse_fable_from_gigma_marketplace(self):
         backend=NativeBackend(self.root,self.home,health_function=lambda *a,**kw:{'status':'passed'})
         rows=[{'pluginId':'superpowers@fable-superpowers','name':'superpowers','enabled':True,'version':'7.0.1'},
-            {'pluginId':'fable5-codex@gigma-skills','name':'fable5-codex','enabled':True,'version':'1.3.2'}]
+            self.fable_row()]
         with patch.object(backend,'installed',return_value=rows) as installed, patch.object(backend,'command',return_value=subprocess.CompletedProcess([],0,'codex test','')):
             self.assertEqual(backend.context()['fable_id'],'fable5-codex@gigma-skills')
             self.assertEqual(backend.health(self.package,'7.0.1',inventory(self.package))['fable_id'],'fable5-codex@gigma-skills')
         self.assertTrue(all(not call.args for call in installed.call_args_list))
+
+    def fable_row(self,marketplace='gigma-skills'):
+        cache=self.home/'plugins/cache'/marketplace/'fable5-codex/1.3.2'
+        write_json(cache/'.codex-plugin/plugin.json',{'name':'fable5-codex','version':'1.3.2'})
+        skill=cache/'.agents/skills/fable5-codex/SKILL.md';skill.parent.mkdir(parents=True,exist_ok=True);skill.write_text('baseline')
+        (cache/'.mcp.json').write_text('{"mcpServers":{}}')
+        return {'pluginId':'fable5-codex@'+marketplace,'name':'fable5-codex','marketplaceName':marketplace,
+            'version':'1.3.2','enabled':True,'installed':True,'installedPath':str(cache)}
+
+    def test_context_tracks_same_version_fable_skill_and_mcp_content(self):
+        backend=NativeBackend(self.root,self.home);row=self.fable_row();cache=Path(row['installedPath'])
+        with patch.object(backend,'installed',return_value=[row]),patch.object(backend,'command',return_value=subprocess.CompletedProcess([],0,'codex test','')):
+            first=backend.context()
+            (cache/'.agents/skills/fable5-codex/SKILL.md').write_text('edited baseline')
+            second=backend.context();self.assertNotEqual(first,second)
+            (cache/'.mcp.json').write_text('{"mcpServers":{"changed":{}}}')
+            third=backend.context();self.assertNotEqual(second,third)
+            for directory in ['.git','__pycache__']:
+                path=cache/directory;path.mkdir();(path/'bookkeeping').write_text('ignore')
+            self.assertEqual(third,backend.context())
+            self.assertEqual(third['fable_runtime']['cache_path'],str(cache.resolve()))
+
+    def test_context_rejects_unverified_fable_cache_identity(self):
+        backend=NativeBackend(self.root,self.home);row=self.fable_row();cache=Path(row['installedPath'])
+        write_json(cache/'.codex-plugin/plugin.json',{'name':'fable5-codex','version':'9.0.0'})
+        with patch.object(backend,'installed',return_value=[row]),patch.object(backend,'command',return_value=subprocess.CompletedProcess([],0,'codex test','')):
+            with self.assertRaises(Conflict):backend.context()
 
     def test_fresh_home_discovery_does_not_invoke_native_or_create_home(self):
         home=self.base/'missing';backend=NativeBackend(self.root,home)

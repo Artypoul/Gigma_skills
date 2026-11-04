@@ -16,7 +16,7 @@ import uuid
 
 HERE=Path(__file__).resolve().parent
 sys.path.insert(0,str(HERE/'updater'))
-from core import Conflict, UpdateError, atomic_write, digest, exclusive_lock, inventory, write_json
+from core import Conflict, UpdateError, atomic_write, digest, exclusive_lock, inventory, write_json, hold_receipt, held_receipt_applies
 from native import NativeBackend
 from source import latest_release, stage_release
 
@@ -132,11 +132,12 @@ def deploy_runtime(source,root,*,apply):
 class Setup:
     def __init__(self,home,marketplace_root=None,*,root=None,backend=None,runtime_source=None,policy_source=None,
                  requirements=requirements,latest=latest_release,stage=stage_release,compatibility=None,failpoint=None,
-                 adopt_marketplace=False):
+                 adopt_marketplace=False,retry=False):
         self.home=Path(home).resolve();self.root=Path(root).resolve() if root else self.home/'local-plugins/gigma-skills'
         default_catalog=HERE.parents[2]
         self.catalog=Path(marketplace_root).resolve() if marketplace_root else (default_catalog if (default_catalog/'.agents/plugins/marketplace.json').is_file() else None)
         self.adopt_marketplace=adopt_marketplace
+        self.retry=retry
         self.backend=backend or NativeBackend(self.root,self.home)
         self.runtime_source=Path(runtime_source) if runtime_source else HERE/'updater'
         self.policy_source=Path(policy_source) if policy_source else HERE.parent/'assets/cooperation-AGENTS.md'
@@ -333,7 +334,7 @@ class Setup:
         return {'status':'recovered','reason':'Interrupted initial activation was rolled back.'}
 
     def context(self,path,files):
-        return {'backend':self.backend.context(),'package':files,'policy':digest(self.home/'AGENTS.md'),
+        return {'backend':deepcopy(self.backend.context()),'package':inventory(path),'policy':digest(self.home/'AGENTS.md'),
             'settings':settings(self.home),'source':str(Path(path).resolve())}
 
     def automation(self,factory):
@@ -362,12 +363,13 @@ class Setup:
                 if not found['fable'] or found['fable']['pluginId']!=FABLE:raise UpdateError('Native Fable installation was not discovered.')
             if found['superpowers']:
                 return self.validate_existing(found,policy,runtime,automation_request)
-            release=self.initial_release();signature=hashlib.sha256(json.dumps({'release':release,'backend':self.backend.context(),
+            verified_backend=deepcopy(self.backend.context())
+            release=self.initial_release();signature=hashlib.sha256(json.dumps({'release':release,'backend':verified_backend,
                 'settings':settings(self.home),'policy':digest(self.home/'AGENTS.md')},sort_keys=True).encode()).hexdigest()
             held=self.state/'bootstrap-held.json'
             if held.exists():
                 previous=json.loads(held.read_text())
-                if previous.get('signature')==signature:return {'status':'held','new_failure':False,'report':previous['report']}
+                if held_receipt_applies(previous,signature,retry=self.retry):return {'status':'held','new_failure':False,'report':previous['report']}
             run=self.state/'runs'/('bootstrap-'+uuid.uuid4().hex)
             candidate=self.stage(release,run/'candidate',baseline_package=None);package=Path(candidate['package_path']);files=inventory(package)
             if candidate.get('version')!=release['version'] or candidate.get('commit')!=release['expected_commit']:
@@ -375,10 +377,11 @@ class Setup:
             before=settings(self.home);policy_hash=digest(self.home/'AGENTS.md')
             checks=self.compatibility(candidate,run/'compatibility',self.home,allow_empty_outside=True)
             if checks.get('status')!='passed':
-                write_json(run/'rejected.json',checks);write_json(held,{'signature':signature,'report':str(run/'rejected.json')})
+                write_json(run/'rejected.json',checks);write_json(held,hold_receipt(signature,run/'rejected.json',checks))
                 return {'status':'held','new_failure':True,'report':str(run/'rejected.json'),'reason':'compatibility_failed'}
             if inventory(package)!=files or settings(self.home)!=before or digest(self.home/'AGENTS.md')!=policy_hash:
                 raise Conflict('Candidate or destination preferences changed during validation.')
+            if self.backend.context()!=verified_backend:raise Conflict('Verification backend context changed during validation.')
             now=self.discover()
             if not now['managed_registry']:raise Conflict('Gigma registry changed during validation; activation preserves it.')
             if now['superpowers']:raise Conflict('Superpowers appeared during validation; setup preserves it.')
@@ -393,14 +396,16 @@ class Setup:
             next(x for x in manifest['plugins'] if x['name']=='superpowers')['source']={'source':'local','path':'./'+destination.relative_to(self.root).as_posix()}
             encoded=(json.dumps(manifest,ensure_ascii=False,indent=2)+'\n').encode()
             transaction={'phase':'activating','owns_new_plugin':True,'version':candidate['version'],'source':str(destination),'inventory':files,
-                'old_marketplace_hex':old_marketplace.hex(),'new_marketplace_hex':encoded.hex()}
+                'old_marketplace_hex':old_marketplace.hex(),'new_marketplace_hex':encoded.hex(),'verification_context':verified_backend}
             write_json(self.journal,transaction)
             try:
+                if self.backend.context()!=verified_backend:raise Conflict('Verification backend context changed before activation.')
                 atomic_write(self.marketplace,encoded,expected=old_marketplace)
                 installation=self.backend.add(PLUGIN)
                 transaction.update(phase='installed',installed_row=next(x for x in self.backend.installed() if x.get('pluginId')==PLUGIN))
                 write_json(self.journal,transaction);self.fault('after_install')
                 health=self.backend.health(destination,candidate['version'],files)
+                if self.backend.context()!=verified_backend:raise Conflict('Verification backend context changed during activation.')
                 if settings(self.home).get('plugins',{}).get(PLUGIN,{}).get('enabled') is False:raise Conflict('Superpowers was disabled during setup.')
                 after=settings(self.home)
                 after.get('plugins',{}).pop(PLUGIN,None)
@@ -410,6 +415,7 @@ class Setup:
                 provenance={'version':candidate['version'],'origin':candidate,'sourceFiles':files,'compatibility_report':str(run/'compatibility')}
                 write_json(self.root/'provenance.json',provenance)
                 context=self.context(destination,files)
+                if context['backend']!=verified_backend or context['package']!=files:raise Conflict('Verification context changed before completion.')
                 write_json(self.state/'bootstrap-verified.json',{'context':context,'checks':checks,'candidate':candidate})
                 write_json(self.state/'marketplace-owned.json',{'schema':1,'manifest_hex':encoded.hex(),'source_root':str(self.catalog)})
                 transaction.update(phase='complete',health=health);write_json(self.journal,transaction)
@@ -432,7 +438,14 @@ class Setup:
         previous=json.loads(receipt.read_text()) if receipt.exists() else None
         if previous and previous.get('context')==context:
             health=self.backend.health(package,version,files)
+            if self.context(package,files)!=context:raise Conflict('Existing verification context changed during health validation.')
             return {'status':'unchanged','version':version,'health':health,'policy':policy,'runtime':runtime,**self.automation(automation_request)}
+        signature=hashlib.sha256(json.dumps({'mode':'existing','context':context},sort_keys=True).encode()).hexdigest()
+        held=self.state/'bootstrap-held.json'
+        if held.exists():
+            previous=json.loads(held.read_text())
+            if held_receipt_applies(previous,signature,retry=self.retry):
+                return {'status':'held','new_failure':False,'reason':'existing_context_validation_failed','report':previous['report']}
         run=self.state/'runs'/('bootstrap-validation-'+uuid.uuid4().hex)
         # Validate the actual active package and reuse the provenance of its immutable source.
         provenance=json.loads((self.root/'provenance.json').read_text(encoding='utf-8-sig')) if (self.root/'provenance.json').exists() else {}
@@ -440,9 +453,12 @@ class Setup:
         if inventory(staged)!=files:raise UpdateError('Existing package staging copy failed verification.')
         candidate={**provenance.get('origin',{}),'package_path':str(staged),'stage_path':str(run/'source'),'version':version}
         checks=self.compatibility(candidate,run/'compatibility',self.home)
-        if checks.get('status')!='passed':return {'status':'held','reason':'existing_context_validation_failed','checks':checks}
+        if checks.get('status')!='passed':
+            write_json(run/'rejected.json',checks);write_json(held,hold_receipt(signature,run/'rejected.json',checks))
+            return {'status':'held','new_failure':True,'reason':'existing_context_validation_failed','checks':checks,'report':str(run/'rejected.json')}
         if self.context(package,files)!=context:raise Conflict('Existing package or preferences changed during validation.')
         health=self.backend.health(package,version,files)
+        if self.context(package,files)!=context:raise Conflict('Existing verification context changed during health validation.')
         write_json(receipt,{'context':context,'checks':checks,'candidate':candidate})
         return {'status':'validated','version':version,'checks':checks,'health':health,'policy':policy,'runtime':runtime,**self.automation(automation_request)}
 
@@ -451,8 +467,9 @@ def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action',choices=['plan','install']);parser.add_argument('--home',type=Path,required=True)
     parser.add_argument('--marketplace-root',type=Path);parser.add_argument('--adopt-marketplace',action='store_true')
+    parser.add_argument('--retry',action='store_true',help='Ignore a cached compatibility hold and rerun all verification gates.')
     args=parser.parse_args(argv)
-    try:result=getattr(Setup(args.home,args.marketplace_root,adopt_marketplace=args.adopt_marketplace),args.action)()
+    try:result=getattr(Setup(args.home,args.marketplace_root,adopt_marketplace=args.adopt_marketplace,retry=args.retry),args.action)()
     except Exception as error:result={'status':'failed','error_type':type(error).__name__,'reason':str(error)}
     print(json.dumps(result,ensure_ascii=False,indent=2))
     return 0 if result['status'] in {'planned','installed','validated','unchanged','recovered'} else 2

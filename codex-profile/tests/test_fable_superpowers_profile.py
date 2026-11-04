@@ -64,5 +64,28 @@ class PortableProfileTests(unittest.TestCase):
             self.assertEqual(len(args),3)
             self.assertEqual(Path(args[2]).resolve(),home.resolve())
 
+    def test_profile_and_installer_forward_retry_without_running_install_during_whatif(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);scripts=self.make_spy(root)
+            profile=root/'codex-profile';profile.mkdir(exist_ok=True)
+            shutil.copy2(REPO/'codex-profile/setup.ps1',profile)
+            home=root/'retry destination'
+            for script,extra in [(scripts/'Install-FableSuperpowers.ps1',[]),
+                                 (profile/'setup.ps1',['-Workflow','FableSuperpowers'])]:
+                with self.subTest(script=script):
+                    args=self.invoke(script,'-CodexHome',home,*extra,'-WhatIf','-Retry')
+                    self.assertEqual(args[0],'plan')
+                    self.assertIn('--retry',args)
+                    self.assertEqual(args.count('--retry'),1)
+                    self.assertFalse(home.exists())
+
+    def test_update_launcher_forwards_explicit_retry(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            shutil.copy2(PROFILE/'scripts/updater/Update-Superpowers.ps1',root)
+            (root/'update.py').write_text('import json,sys; print(json.dumps(sys.argv[1:]))',encoding='utf-8')
+            args=self.invoke(root/'Update-Superpowers.ps1','-Action','run','-Retry')
+            self.assertEqual(args,['run','--retry'])
+
 
 if __name__=='__main__':unittest.main()

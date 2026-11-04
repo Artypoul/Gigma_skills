@@ -16,6 +16,17 @@ def verification_fingerprint(maintenance):
         if path.is_file() and '__pycache__' not in path.parts and path.suffix!='.pyc')
     return {path.relative_to(maintenance).as_posix():digest(path) for path in sorted(files) if path.is_file()}
 
+def runtime_fingerprint(root):
+    """Hash installed runtime bytes while ignoring generated bookkeeping."""
+    root=Path(root)
+    hashes={}
+    for path in sorted(root.rglob('*')):
+        relative=path.relative_to(root)
+        if any(part in {'.git','__pycache__'} for part in relative.parts) or path.suffix=='.pyc':continue
+        if path.is_symlink():raise Conflict('Fable runtime contains a symbolic link; content cannot be verified.')
+        if path.is_file():hashes[relative.as_posix()]=digest(path)
+    return hashes
+
 class NativeBackend:
     def __init__(self,root,home,health_function=None):
         self.root,self.home=Path(root),Path(home)
@@ -78,13 +89,30 @@ class NativeBackend:
             'installed_cache':installed_cache,'caches':caches}
 
     def context(self):
-        version=self.command(['--version'],timeout=30)
-        if version.returncode: raise UpdateError('Could not verify Codex version.')
+        codex_version=self.command(['--version'],timeout=30)
+        if codex_version.returncode: raise UpdateError('Could not verify Codex version.')
         fable=[x for x in self.installed() if str(x.get('pluginId','')).startswith('fable5-codex@') and x.get('enabled')]
         if len(fable)!=1: raise UpdateError('Fable is not installed and enabled.')
+        row=fable[0];plugin_id=row['pluginId'];name,marketplace=plugin_id.split('@',1)
+        version=row.get('version')
+        if name!='fable5-codex' or not isinstance(version,str) or not version or Path(version).name!=version:
+            raise Conflict('Fable identity/version cannot be verified.')
+        if row.get('marketplaceName',marketplace)!=marketplace or Path(marketplace).name!=marketplace:
+            raise Conflict('Fable marketplace identity cannot be verified.')
+        cache=(self.home/'plugins/cache'/marketplace/name/version).resolve()
+        installed=Path(row['installedPath']).resolve() if row.get('installedPath') else cache
+        if installed!=cache or not cache.is_dir():
+            raise Conflict('Fable installed cache path cannot be verified.')
+        manifest=cache/'.codex-plugin/plugin.json'
+        try:package=json.loads(manifest.read_text(encoding='utf-8-sig'))
+        except (OSError,ValueError) as error:raise Conflict('Fable installed manifest cannot be verified.') from error
+        if package.get('name')!=name or package.get('version')!=version:
+            raise Conflict('Fable installed manifest differs from the enabled identity/version.')
+        runtime={'plugin_id':plugin_id,'marketplace':marketplace,'version':version,'cache_path':str(cache),
+            'manifest_path':str(manifest),'hashes':runtime_fingerprint(cache)}
         maintenance=Path(__file__).resolve().parent
         validators=verification_fingerprint(maintenance)
-        return {'codex':version.stdout.strip(),'fable_id':fable[0]['pluginId'],'fable_version':fable[0]['version'],'validator_hashes':validators}
+        return {'codex':codex_version.stdout.strip(),'fable_id':fable[0]['pluginId'],'fable_version':fable[0]['version'],'validator_hashes':validators,'fable_runtime':runtime}
 
     def marketplaces(self):
         if not self.home.exists():return []

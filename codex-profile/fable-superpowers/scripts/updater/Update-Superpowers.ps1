@@ -1,6 +1,7 @@
 param(
     [ValidateSet('run','check','recover')][string]$Action='run',
-    [string]$CodexHome
+    [string]$CodexHome,
+    [switch]$Retry
 )
 $ErrorActionPreference='Stop'
 $taskProfileRoot=[Environment]::GetFolderPath('UserProfile')
@@ -20,5 +21,6 @@ foreach ($taskPythonCandidate in ($taskPythonCandidates | Select-Object -Unique)
 if (-not $taskPython) { throw 'Python 3.11 or newer is required; no interpreter was installed automatically.' }
 $taskArguments=@('-B',(Join-Path $PSScriptRoot 'update.py'),$Action)
 if ($CodexHome) { $taskArguments+=@('--home',[IO.Path]::GetFullPath($CodexHome)) }
+if ($Retry) { $taskArguments+='--retry' }
 & $taskPython @taskArguments
 exit $LASTEXITCODE

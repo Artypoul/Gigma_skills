@@ -1,5 +1,7 @@
 from pathlib import Path
 import copy
+from contextlib import ExitStack, nullcontext
+from types import SimpleNamespace
 import hashlib
 import json
 import tempfile
@@ -23,6 +25,74 @@ def package(root,version='7.0.2',extra=False):
         file.parent.mkdir(parents=True)
         file.write_text(skill_text(name))
     return {'package_path':str(target),'stage_path':str(root),'version':version}
+
+
+class CompatibilityFailureClassificationTests(unittest.TestCase):
+    def execute(self,*,case_error=None,native_status='completed',assessment_error=None,preflight_error=None):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);home=root/'home';home.mkdir();(home/'AGENTS.md').write_text('policy')
+            (home/'config.toml').write_text('')
+            fixture=root/'fixture';(fixture/'.codex').mkdir(parents=True);(fixture/'.codex/config.toml').write_text('')
+            selected={'candidate_skills':{},'fable_skill':{},'outside_fingerprint':[]}
+            with ExitStack() as stack:
+                for name,kwargs in {
+                    'prepare_marketplace':{'return_value':None},
+                    'prepare_fixtures':{'return_value':({'approved_plan':fixture},root/'outside')},
+                    'TrustLease':{'return_value':nullcontext(SimpleNamespace(record={}))},
+                    'preflight':{'side_effect':preflight_error} if preflight_error else {'return_value':selected},
+                    '_fixture_python':{'return_value':{'exit_code':0}},
+                    '_case_run':{'side_effect':case_error} if case_error else {'return_value':{'status':native_status,'thread_id':'root'}},
+                    'assess_case':{'side_effect':assessment_error} if assessment_error else {'return_value':{'passed':True}},
+                    '_native_catalog':{'return_value':{'skills':[]}},
+                }.items():stack.enter_context(patch.object(c,name,**kwargs))
+                result=c.run_compatibility({'version':'7.0.2'},root/'run',home)
+            self.assertEqual(json.loads((root/'run/compatibility.json').read_text())['retryable'],result['retryable'])
+            return result
+
+    def test_preflight_transport_failure_is_retryable(self):
+        result=self.execute(preflight_error=RuntimeError('model service temporarily unavailable'))
+        self.assertEqual(result['status'],'failed');self.assertTrue(result['retryable'])
+
+    def test_preflight_timeout_and_transport_decode_failure_remain_retryable(self):
+        for error in [TimeoutError('service timed out'),json.JSONDecodeError('truncated service response','',0)]:
+            with self.subTest(error=type(error).__name__):
+                result=self.execute(preflight_error=error)
+                self.assertEqual(result['status'],'failed');self.assertTrue(result['retryable'])
+
+    def test_invalid_candidate_structure_is_a_stable_hold_before_native_trials(self):
+        from core import hold_receipt, held_receipt_applies
+        for invalid in ['missing_frontmatter','duplicate_skill_name']:
+            with self.subTest(invalid=invalid),tempfile.TemporaryDirectory() as td:
+                root=Path(td);home=root/'home';home.mkdir();(home/'AGENTS.md').write_text('policy')
+                (home/'config.toml').write_text('')
+                candidate=package(root/'stage')
+                skill=Path(candidate['package_path'])/'skills/brainstorming/SKILL.md'
+                skill.write_text('invalid frontmatter' if invalid=='missing_frontmatter' else skill_text('writing-plans'))
+                with patch.object(c,'_native_catalog') as native,patch.object(c,'_case_run') as trial,patch.object(c,'_cmd') as command:
+                    result=c.run_compatibility(candidate,root/'run',home)
+                native.assert_not_called();trial.assert_not_called();command.assert_not_called()
+                self.assertEqual(result['status'],'failed');self.assertFalse(result['retryable'])
+                self.assertEqual(result['errors'][0]['type'],'ValueError')
+                receipt=hold_receipt('same-context',root/'run/compatibility.json',result)
+                self.assertNotIn('retry_after_utc',receipt)
+                receipt['checked_at_utc']='2000-01-01T00:00:00+00:00'
+                self.assertTrue(held_receipt_applies(receipt,'same-context'))
+                self.assertFalse(held_receipt_applies(receipt,'same-context',retry=True))
+
+    def test_case_execution_exception_is_retryable(self):
+        result=self.execute(case_error=RuntimeError('expired transport'))
+        self.assertEqual(result['status'],'failed');self.assertTrue(result['retryable'])
+
+    def test_failed_native_task_before_assessment_is_retryable(self):
+        result=self.execute(native_status='failed')
+        self.assertEqual(result['status'],'failed');self.assertTrue(result['retryable'])
+
+    def test_assessed_behavior_rejection_is_stable(self):
+        result=self.execute(assessment_error=RuntimeError('repeated unnecessary question'))
+        self.assertEqual(result['status'],'failed');self.assertFalse(result['retryable'])
+
+    def test_passing_gate_never_requests_retry(self):
+        result=self.execute();self.assertEqual(result['status'],'passed');self.assertFalse(result['retryable'])
 
 
 class CompatibilityUnitTests(unittest.TestCase):
@@ -372,6 +442,37 @@ class CompatibilityUnitTests(unittest.TestCase):
         stale=copy.deepcopy(native)
         stale['native_subagent_activity'][1]['event_line']=20
         with self.assertRaises(RuntimeError):c.review_evidence(stale,after_event_line=25)
+
+    def test_child_snapshots_preserve_observed_review_receipts(self):
+        observer=c._runner_module()
+        final={'id':'review-final','type':'agentMessage','phase':'final_answer',
+            'text':'Approve. Reviewed the final source diff against the approved plan and checked the exact source files. All independent tests passed and no defects remain.'}
+        observed={'thread_id':'reviewer','turn_id':'review-turn','event_line':42,**final}
+        activities=[{'agentThreadId':'reviewer','kind':'started','event_line':30},
+            {'agentThreadId':'reviewer','kind':'completed','event_line':45}]
+        for snapshot in [{'thread':{'turns':[{'items':[final]}]}},{'items':[{'item':final}]}]:
+            with self.subTest(snapshot=snapshot):
+                reports=observer.public_child_reports({'reviewer':snapshot},{('reviewer','review-final'):observed},{})
+                report=reports['reviewer'][0]
+                self.assertEqual(report.get('event_line'),42)
+                self.assertEqual(report.get('thread_id'),'reviewer')
+                self.assertEqual(report.get('turn_id'),'review-turn')
+                self.assertTrue(c.review_evidence({'native_subagent_activity':activities,'child_reports':reports},after_event_line=25)['passed'])
+
+    def test_snapshot_only_or_changed_review_has_no_observed_chronology(self):
+        observer=c._runner_module()
+        final={'id':'review-final','type':'agentMessage','phase':'final_answer',
+            'text':'Approve. Reviewed the final source diff against the approved plan and checked the exact source files. All independent tests passed and no defects remain.'}
+        observed={'thread_id':'reviewer','event_line':42,**final}
+        activities=[{'agentThreadId':'reviewer','kind':'started','event_line':30},
+            {'agentThreadId':'reviewer','kind':'completed','event_line':45}]
+        for item,messages in [({**final,'event_line':42},{}),
+                              ({**final,'text':final['text']+' Additional unobserved text.'},{('reviewer','review-final'):observed})]:
+            with self.subTest(item=item):
+                reports=observer.public_child_reports({'reviewer':{'items':[{'item':item}]}},messages,{})
+                self.assertNotIn('event_line',reports['reviewer'][0])
+                with self.assertRaises(RuntimeError):
+                    c.review_evidence({'native_subagent_activity':activities,'child_reports':reports},after_event_line=25)
 
     def test_negative_or_conditional_verdict_is_rejected(self):
         for verdict in ['Do not approve','Not approved','Approve if the failing tests are fixed','Approve when tests pass','Approve provided the defect is fixed','Approved subject to corrections','Не готово','Одобрено при условии исправлений']:

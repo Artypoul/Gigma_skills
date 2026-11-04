@@ -11,6 +11,8 @@ class Backend:
     def __init__(self,source):
         self.calls=[]; self.installed='7.0.1'; self.source=str(source.resolve())
         self.caches={'7.0.1':inventory(source)}; self.fail_install=False; self.fail_health=False
+        self.verification_context={'codex':'test','fable_runtime':'original'}
+    def context(self):return deepcopy(self.verification_context)
     def installation_snapshot(self):
         return {'identity':{'pluginId':'superpowers@fable-superpowers'},'version':self.installed,
             'source':self.source,'source_inventory':inventory(self.source) if Path(self.source).is_dir() else None,
@@ -104,6 +106,54 @@ class TransactionTests(unittest.TestCase):
         def fail(*args): self.compat_calls+=1;return {'status':'failed','reason':'Repeated clarification'}
         first=self.manager(compatibility=fail).run();second=self.manager(compatibility=fail).run()
         self.assertTrue(first['new_failure']);self.assertFalse(second['new_failure']);self.assertEqual(self.compat_calls,1);self.assert_old()
+    def test_verification_context_change_during_compatibility_aborts_before_activation(self):
+        def change(*args):
+            self.backend.verification_context['fable_runtime']='same-version user edit'
+            return {'status':'passed'}
+        with self.assertRaisesRegex(Conflict,'context'):
+            self.manager(compatibility=change).run()
+        self.assertEqual(self.backend.calls,[]);self.assert_old()
+        self.assertEqual(self.backend.context()['fable_runtime'],'same-version user edit')
+
+    def test_verification_context_change_after_activation_rolls_back_only_superpowers(self):
+        for boundary in ['after_pointer','after_health','after_provenance']:
+            with self.subTest(boundary=boundary):
+                self.backend.verification_context['fable_runtime']='original'
+                def change(point):
+                    if point==boundary:self.backend.verification_context['fable_runtime']='new Fable runtime'
+                result=self.manager(failpoint=change).run()
+                self.assertEqual(result['status'],'rolled_back');self.assert_old()
+                self.assertEqual(self.backend.context()['fable_runtime'],'new Fable runtime')
+
+    def test_transient_hold_expires_and_reruns_actual_compatibility(self):
+        def fail(*args):self.compat_calls+=1;return {'status':'failed','retryable':True}
+        first=self.manager(compatibility=fail).run();second=self.manager(compatibility=fail).run()
+        self.assertTrue(first['new_failure']);self.assertFalse(second['new_failure']);self.assertEqual(self.compat_calls,1)
+        held=self.root/'updates/held.json';receipt=json.loads(held.read_text());self.assertIn('retry_after_utc',receipt)
+        receipt['retry_after_utc']='2000-01-01T00:00:00+00:00';write_json(held,receipt)
+        self.assertEqual(self.manager().run()['status'],'updated');self.assertEqual(self.compat_calls,2)
+
+    def test_explicit_retry_reruns_stable_failure_without_activating_it(self):
+        def fail(*args):self.compat_calls+=1;return {'status':'failed','retryable':False}
+        self.manager(compatibility=fail).run();self.manager(compatibility=fail).run()
+        self.assertEqual(self.compat_calls,1)
+        result=self.manager(compatibility=fail,retry=True).run()
+        self.assertTrue(result['new_failure']);self.assertEqual(result['status'],'held')
+        self.assertEqual(self.compat_calls,2);self.assertEqual(self.stage_calls,2);self.assert_old()
+
+    def test_legacy_hold_needs_explicit_retry_even_after_old_check_time(self):
+        def fail(*args):self.compat_calls+=1;return {'status':'failed'}
+        self.manager(compatibility=fail).run();held=self.root/'updates/held.json'
+        receipt=json.loads(held.read_text());receipt.pop('retryable');receipt['checked_at_utc']='2000-01-01T00:00:00+00:00';write_json(held,receipt)
+        self.assertFalse(self.manager(compatibility=fail).run()['new_failure']);self.assertEqual(self.compat_calls,1)
+        self.assertEqual(self.manager(retry=True).run()['status'],'updated');self.assertEqual(self.compat_calls,2)
+
+    def test_update_cli_forwards_explicit_retry(self):
+        import update
+        with patch.object(update,'NativeBackend'),patch.object(update,'Manager') as factory,patch('sys.argv',['update.py','run','--root',str(self.root),'--home',str(self.home),'--retry']),patch('builtins.print'):
+            factory.return_value.run.return_value={'status':'held','new_failure':True}
+            self.assertEqual(update.main(),2);self.assertTrue(factory.call_args.kwargs['retry'])
+
     def test_lock_prevents_overlapping_updates(self):
         recovery_calls=[]
         with exclusive_lock(self.root/'updates/update.lock'):
