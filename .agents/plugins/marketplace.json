@@ -162,6 +162,31 @@
       }
     },
     {
+      "name": "superpowers",
+      "version": "7.0.2",
+      "description": "Upstream engineering skills for planning, TDD, debugging, parallel execution and code review, pinned as a complete Codex package.",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/obra/superpowers.git",
+        "sha": "22f0b463e7a5e579904dd6211a520321035526f7"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools",
+      "interface": {
+        "displayName": "Superpowers",
+        "shortDescription": "Planning, TDD, debugging and code review",
+        "longDescription": "Complete upstream Superpowers package for Codex. Uses its native Codex manifest with shared hooks disabled. The portable Gigma profile configures cooperation with Fable 5, reusing existing plans and verification evidence.",
+        "developerName": "Jesse Vincent",
+        "category": "Developer Tools",
+        "defaultPrompt": [
+          "Use the relevant Superpowers engineering skills for this task, reusing existing requirements, plans and verification evidence."
+        ]
+      }
+    },
+    {
       "name": "gigma-mcp",
       "version": "0.2.0",
       "description": "Connect an agent to the Gigma owner MCP through native callback onboarding.",
