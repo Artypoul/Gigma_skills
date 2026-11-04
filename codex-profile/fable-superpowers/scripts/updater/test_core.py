@@ -28,7 +28,7 @@ class Backend:
 
 class TransactionTests(unittest.TestCase):
     def setUp(self):
-        self.temp=tempfile.TemporaryDirectory();self.base=Path(self.temp.name)
+        self.temp=tempfile.TemporaryDirectory();self.base=Path(self.temp.name).resolve()
         self.root=self.base/'marketplace';self.home=self.base/'home';self.home.mkdir()
         (self.home/'AGENTS.md').write_text('Fable baseline; Superpowers engineering; questions once.\n')
         (self.home/'config.toml').write_text('[plugins."superpowers@fable-superpowers"]\nenabled=true\n[plugins."fable5-codex@fable5"]\nenabled=true\n[unrelated]\nkeep="original"\n')

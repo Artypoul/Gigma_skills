@@ -17,6 +17,7 @@ class FixtureSandboxTests(unittest.TestCase):
         self.which=patch.object(c.shutil,'which',side_effect=lambda name:sys.executable if name=='codex' else original(name))
         self.which.start();self.addCleanup(self.which.stop)
     def fixture(self, root):
+        root=Path(root).resolve()
         home=root/'home'
         home.mkdir()
         (home/'config.toml').write_text('model="current"\n')
