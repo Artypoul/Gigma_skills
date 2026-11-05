@@ -60,6 +60,7 @@
 - Research: **`research-with-evidence`** — ответы на текущие/спорные/дорогие по последствиям вопросы через реальные источники, цитаты, разбор конфликтов и явное отделение фактов от вывода.
 - Вход: **`development-handoff`** — проверяемый handoff перед продолжением PR, фиксом review, передачей агенту или работой со скилами/плагинами.
 - Главное правило: продолжать работу от фактов Git/GitHub/CI/локальных файлов, а не от устаревшей памяти чата; фиксировать принятые product/API/runtime/compatibility decisions как decision lock; перед skill move/add/remove проверять ownership, версии плагинов, marketplace discovery, `.codex` sync и re-review.
+- Graphify: **`graphify-workflow`** — настройка и использование графов кода/процессов и Graphify MCP; для обычного одноразового поиска по коду не нужен.
 
 ### Frontend workflow
 Generic frontend engineering skills for reusable project work, not tied to Gigma-only business logic.
