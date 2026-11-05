@@ -1,0 +1,4 @@
+interface:
+  display_name: "Работа с Graphify"
+  short_description: "Запросы, настройка и проверка карт Graphify"
+  default_prompt: "Используй $graphify-workflow, чтобы исследовать или проверить карту Graphify."

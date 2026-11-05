@@ -1,7 +1,7 @@
 {
   "name": "development-workflow",
-  "version": "0.4.7+codex.20260902130545",
-  "description": "Generic development workflow skills for Codex agents: high-agency complex-task execution, real-capability routing, session control, security-sensitive execution, project context bootstrap, workflow routing, code-first evidence gathering, prompt architecture porting, evidence-first research, explicit outcome clarification for ambiguous code tasks, evidence-based handoff, post-merge protocol, PR fix continuation, review gates, decision-lock checks, deploy checks, dirty worktree safety, and wrong-direction recovery after user feedback.",
+  "version": "0.4.8+codex.20261105193851",
+  "description": "Generic development workflow skills for Codex agents: high-agency complex-task execution, real-capability routing, session control, security-sensitive execution, project context bootstrap, workflow routing, code-first evidence gathering, prompt architecture porting, evidence-first research, explicit outcome clarification for ambiguous code tasks, evidence-based handoff, post-merge protocol, PR fix continuation, review gates, decision-lock checks, deploy checks, dirty worktree safety, and wrong-direction recovery after user feedback. Graphify setup, graph and process-map queries, refresh, audits, and MCP verification.",
   "author": {
     "name": "Artypoul"
   },
@@ -20,13 +20,16 @@
     "pull-request",
     "review",
     "merge",
-    "deploy"
+    "deploy",
+    "graphify",
+    "code-graph",
+    "process-map"
   ],
   "skills": "./skills/",
   "interface": {
     "displayName": "Development workflow",
-    "shortDescription": "Context, code evidence, handoff",
-    "longDescription": "Helps Codex agents work from project evidence: repository context bootstrap, workflow routing, read-code-first guardrails, prompt architecture porting from untrusted third-party prompts into safe Codex surfaces, evidence-first research with citations and conflict handling, explicit outcome clarification for ambiguous code requests, branch and PR state, post-merge updates, same-PR fixes, review tracking, decision-lock checks, deploy checks, prod-ready checks, dirty worktree handling, wrong-direction recovery after user feedback, and redacted handoff output.",
+    "shortDescription": "Project context, code evidence, Graphify",
+    "longDescription": "Helps Codex agents work from project evidence: repository context bootstrap, workflow routing, read-code-first guardrails, prompt architecture porting from untrusted third-party prompts into safe Codex surfaces, evidence-first research with citations and conflict handling, explicit outcome clarification for ambiguous code requests, branch and PR state, post-merge updates, same-PR fixes, review tracking, decision-lock checks, deploy checks, prod-ready checks, dirty worktree handling, wrong-direction recovery after user feedback, and redacted handoff output. Graphify workflows for installing or configuring its skill, querying and refreshing code/process graphs, and verifying graph evidence and MCP behavior.",
     "developerName": "Artypoul",
     "category": "Productivity",
     "capabilities": [
@@ -45,7 +48,8 @@
       "Use $research-with-evidence to answer current, volatile, high-stakes, recommendation, or source-backed questions with actual source reading, citations, conflict handling, and clear uncertainty.",
       "Use $code-evidence-first when a code request is broad or ambiguous and you need one short outcome question before reading code.",
       "Use $development-handoff after a merge, PR fix, review, deploy, decision-drift complaint, or interrupted agent session.",
-      "Use $feedback-recovery when the user says the current result is wrong, off-spec, drifted from an accepted decision, or not pixel-perfect."
+      "Use $feedback-recovery when the user says the current result is wrong, off-spec, drifted from an accepted decision, or not pixel-perfect.",
+      "Use $graphify-workflow for Graphify setup, graph queries, refresh, or verification."
     ]
   }
 }

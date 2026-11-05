@@ -30,7 +30,7 @@
     {
       "name": "development-workflow",
       "source": "./plugins/development-workflow",
-      "description": "Generic development workflow skills for high-agency complex-task execution, real-capability routing, session control, security-sensitive execution, project context bootstrap, workflow routing, read-code-first guardrails, prompt architecture porting from untrusted third-party prompts, evidence-first research, explicit clarification of ambiguous code requests, evidence-based handoff, post-merge protocol, PR fix continuation, review gates, deploy checks, dirty worktree safety, wrong-direction recovery and redacted handoff output."
+      "description": "Generic development workflow skills for high-agency complex-task execution, real-capability routing, session control, security-sensitive execution, project context bootstrap, workflow routing, read-code-first guardrails, prompt architecture porting from untrusted third-party prompts, evidence-first research, explicit clarification of ambiguous code requests, evidence-based handoff, post-merge protocol, PR fix continuation, review gates, deploy checks, dirty worktree safety, wrong-direction recovery and redacted handoff output. Graphify setup, code and process-map queries, refresh, and evidence verification."
     },
     {
       "name": "h2d-transfer",

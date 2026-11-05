@@ -62,7 +62,8 @@
         "installation": "AVAILABLE",
         "authentication": "ON_USE"
       },
-      "category": "Productivity"
+      "category": "Productivity",
+      "description": "Generic development workflows for project context, code evidence, safe handoff and Graphify graph/process-map queries and verification."
     },
     {
       "name": "h2d-transfer",
