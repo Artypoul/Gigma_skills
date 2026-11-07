@@ -7,6 +7,10 @@ description: Load project context, then route multi-step or product-sensitive re
 
 Use this skill to decide which workflow chain to run. It is a router, not a replacement for the selected skills.
 
+## One lifecycle and authority
+
+Use the active Fable baseline when applicable, then bootstrap project context for repository work. For engineering work select one Superpowers lifecycle when available, with feature and project-specific requirements contributing their applicable gates in the same stages. Reuse an approved plan after checking its scope, current decisions and outstanding gates; do not repeat an equivalent stage solely because another skill names it. A skill does not grant file writes, commits, publication or other side effects. Explicit user and project constraints remain binding.
+
 ## Always Start
 
 1. Load project context first: run `project-context-bootstrap` when available and read the project-local `AGENTS.md` and memory files. Recorded decisions, blockers and current Git/PR state must inform the question instead of being asked about.
@@ -22,7 +26,7 @@ Use this skill to decide which workflow chain to run. It is a router, not a repl
 
 | User/task signal | Skill chain |
 | --- | --- |
-| "сделай", "реализуй", "добавь", "измени" when the user is asking for code/product changes; multi-file feature, API/UI/data changes | `project-context-bootstrap` -> `feature` -> project plan/review skills -> implementation -> tests/checks -> code review/monster feedback -> finalization |
+| "сделай", "реализуй", "добавь", "измени" when the user is asking for code/product changes; multi-file feature, API/UI/data changes | `project-context-bootstrap` -> one Superpowers engineering lifecycle when available, with `feature` and project plan/review gates applied within its stages -> implementation -> checks -> required review -> authorized finalization |
 | Complex task with several steps, code/research/files/tools, or a requested durable deliverable | `high-agency-execution` -> narrow specialist skill -> `capability-aware-execution` or `agent-session-execution` only when needed |
 | Authorized security review/test, secrets or sensitive data, access-control change, or potentially harmful external effect | `project-context-bootstrap` -> `security-sensitive-execution` -> narrow domain skill -> runtime confirmation and verification |
 | "ревью", "чек ап", "ошибки агента", "посмотри PR" | `project-context-bootstrap` -> code-review stance -> local review skills -> findings-first report; when the same request explicitly includes "исправь/чини", continue with supported in-scope repairs and fresh validation |
@@ -37,7 +41,7 @@ Use this skill to decide which workflow chain to run. It is a router, not a repl
 | PR creation/finalization | `project-context-bootstrap` -> local `pr-finalize` or equivalent |
 | Unknown or product-sensitive choice | `project-context-bootstrap` -> ask one concrete product question before edits |
 
-See `references/bundles.md` for reusable named bundles.
+See `references/bundles.md` for reusable named bundles: their applicable gates and checks contribute within the single selected lifecycle, not a second lifecycle.
 
 ## Output
 
