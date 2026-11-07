@@ -17,7 +17,7 @@ class InstallationTests(unittest.TestCase):
             installed = Path(directory) / 'vps-support'
             shutil.copytree(PLUGIN, installed, ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
             names = {p.parent.name for p in (installed / 'skills').glob('*/SKILL.md')}
-            self.assertEqual(names, {'vps-support', 'vps-connect', 'happ-setup', 'vps-troubleshoot', 'vps-node-network-setup'})
+            self.assertEqual(names, {'vps-support', 'vps-connect', 'happ-setup', 'vps-troubleshoot', 'vps-node-network-setup', 'vps-node-panel-setup', 'vps-panel-setup'})
             for path in (installed / 'skills').glob('*/SKILL.md'):
                 with self.subTest(skill=path.parent.name):
                     for target in re.findall(r'\[[^\]]*\]\(([^)]+)\)', path.read_text(encoding='utf-8')):
@@ -26,7 +26,15 @@ class InstallationTests(unittest.TestCase):
                         resolved = (path.parent / target.split('#', 1)[0]).resolve()
                         self.assertTrue(resolved.is_relative_to(installed.resolve()), target)
                         self.assertTrue(resolved.is_file(), target)
+            node_setup = installed / 'skills/vps-node-panel-setup/SKILL.md'
+            panel_setup = installed / 'skills/vps-panel-setup/SKILL.md'
+            panel_links = re.findall(r'\[[^\]]*\]\(([^)]+)\)', node_setup.read_text(encoding='utf-8'))
+            self.assertIn(panel_setup.resolve(), [(node_setup.parent / link).resolve() for link in panel_links if '://' not in link])
             self.assertTrue((installed / 'reference/vps-routing.md').is_file())
+            network = installed / 'skills/vps-node-network-setup/SKILL.md'
+            setup = installed / 'skills/vps-node-panel-setup/SKILL.md'
+            links = re.findall(r'\[[^\]]*\]\(([^)]+)\)', network.read_text(encoding='utf-8'))
+            self.assertIn(setup.resolve(), [(network.parent / link).resolve() for link in links if '://' not in link])
             script = installed / 'skills/vps-node-network-setup/scripts/compare_tcp_sequences.py'
             spec = importlib.util.spec_from_file_location('fresh_vps_tcp_comparison', script)
             module = importlib.util.module_from_spec(spec)
