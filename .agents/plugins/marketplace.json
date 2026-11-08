@@ -139,12 +139,12 @@
     },
     {
       "name": "fable5-codex",
-      "version": "1.3.7",
+      "version": "1.3.8",
       "description": "Complete source-based Fable 5 workflow for Codex, with engineering references and source traceability.",
       "source": {
         "source": "url",
         "url": "https://github.com/Artypoul/claude-fable-5-system-prompt.git",
-        "sha": "9e1ba910c23730d75a7397228a5006217df85df7"
+        "sha": "a21aef2f4af6531bff99e911e6ccb058cc3849f4"
       },
       "policy": {
         "installation": "AVAILABLE",
