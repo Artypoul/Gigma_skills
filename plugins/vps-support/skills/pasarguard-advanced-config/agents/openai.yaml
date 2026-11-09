@@ -1,0 +1,4 @@
+interface:
+  display_name: "Расширенная настройка PasarGuard"
+  short_description: "Аудит и настройка транспортов PasarGuard"
+  default_prompt: "Примени $pasarguard-advanced-config для аудита и подбора настроек моей панели."

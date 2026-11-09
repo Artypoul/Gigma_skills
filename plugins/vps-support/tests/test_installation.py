@@ -17,7 +17,7 @@ class InstallationTests(unittest.TestCase):
             installed = Path(directory) / 'vps-support'
             shutil.copytree(PLUGIN, installed, ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
             names = {p.parent.name for p in (installed / 'skills').glob('*/SKILL.md')}
-            self.assertEqual(names, {'vps-support', 'vps-connect', 'happ-setup', 'vps-troubleshoot', 'vps-node-network-setup', 'vps-node-panel-setup', 'vps-panel-setup'})
+            self.assertEqual(names, {'vps-support', 'vps-connect', 'happ-setup', 'vps-troubleshoot', 'vps-node-network-setup', 'vps-node-panel-setup', 'vps-panel-setup', 'pasarguard-advanced-config'})
             for path in (installed / 'skills').glob('*/SKILL.md'):
                 with self.subTest(skill=path.parent.name):
                     for target in re.findall(r'\[[^\]]*\]\(([^)]+)\)', path.read_text(encoding='utf-8')):
