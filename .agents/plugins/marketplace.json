@@ -216,6 +216,23 @@
           "Use Gigma MCP to connect my owner workspace through the native callback flow."
         ]
       }
+    },
+    {
+      "name": "devops-skills",
+      "version": "0.1.0",
+      "description": "DevOps generators and validators with VPS setup, audit and safe routing.",
+      "source": {
+        "source": "local",
+        "path": "./plugins/devops-skills"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_USE"
+      },
+      "category": "Developer Tools",
+      "interface": {
+        "displayName": "VPS & DevOps"
+      }
     }
   ]
 }

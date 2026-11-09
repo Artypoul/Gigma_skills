@@ -1,2 +1,37 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# DevOps and VPS package: preserve LF for portable scripts
+plugins/devops-skills/** text=auto eol=lf
+.codex/skills/ansible-generator/** text=auto eol=lf
+.codex/skills/ansible-validator/** text=auto eol=lf
+.codex/skills/azure-pipelines-generator/** text=auto eol=lf
+.codex/skills/azure-pipelines-validator/** text=auto eol=lf
+.codex/skills/bash-script-generator/** text=auto eol=lf
+.codex/skills/bash-script-validator/** text=auto eol=lf
+.codex/skills/dockerfile-generator/** text=auto eol=lf
+.codex/skills/dockerfile-validator/** text=auto eol=lf
+.codex/skills/fluentbit-generator/** text=auto eol=lf
+.codex/skills/fluentbit-validator/** text=auto eol=lf
+.codex/skills/github-actions-generator/** text=auto eol=lf
+.codex/skills/github-actions-validator/** text=auto eol=lf
+.codex/skills/gitlab-ci-generator/** text=auto eol=lf
+.codex/skills/gitlab-ci-validator/** text=auto eol=lf
+.codex/skills/helm-generator/** text=auto eol=lf
+.codex/skills/helm-validator/** text=auto eol=lf
+.codex/skills/jenkinsfile-generator/** text=auto eol=lf
+.codex/skills/jenkinsfile-validator/** text=auto eol=lf
+.codex/skills/k8s-debug/** text=auto eol=lf
+.codex/skills/k8s-yaml-generator/** text=auto eol=lf
+.codex/skills/k8s-yaml-validator/** text=auto eol=lf
+.codex/skills/logql-generator/** text=auto eol=lf
+.codex/skills/loki-config-generator/** text=auto eol=lf
+.codex/skills/makefile-generator/** text=auto eol=lf
+.codex/skills/makefile-validator/** text=auto eol=lf
+.codex/skills/promql-generator/** text=auto eol=lf
+.codex/skills/promql-validator/** text=auto eol=lf
+.codex/skills/terraform-generator/** text=auto eol=lf
+.codex/skills/terraform-validator/** text=auto eol=lf
+.codex/skills/terragrunt-generator/** text=auto eol=lf
+.codex/skills/terragrunt-validator/** text=auto eol=lf
+.codex/skills/vps-forge/** text=auto eol=lf
