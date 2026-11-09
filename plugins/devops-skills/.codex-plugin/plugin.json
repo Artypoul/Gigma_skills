@@ -1,0 +1,24 @@
+{
+  "name": "devops-skills",
+  "version": "0.1.1",
+  "description": "DevOps generators and validators with VPS setup, audit and safe routing.",
+  "author": {
+    "name": "Akin Ozer and Hung Up"
+  },
+  "license": "Apache-2.0 AND MIT",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "VPS & DevOps",
+    "shortDescription": "DevOps and VPS skills",
+    "longDescription": "DevOps generators and validators with VPS setup, audit and safe routing.",
+    "developerName": "Akin Ozer and Hung Up",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Use the relevant DevOps or VPS skills for this task within the authorized scope."
+    ]
+  }
+}

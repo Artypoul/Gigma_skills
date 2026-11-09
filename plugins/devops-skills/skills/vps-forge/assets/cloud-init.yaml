@@ -1,0 +1,261 @@
+#cloud-config
+# vps-forge first-boot template. Fill the <placeholders> from the server you hardened.
+# NO SECRETS in here: user-data is stored by the provider and readable via the metadata service.
+# Validate: cloud-init schema --config-file cloud-init.yaml
+# Gigma marketplace adaptation: select <sudo-policy> as password or nopasswd.
+# Password sudo generates ~/SUDO-PASSWORD (0600, admin-owned) on this server.
+# The OWNER reads it over their key-authenticated SSH session, saves it in their
+# password manager and deletes it. Never retrieve it into agent/chat logs.
+
+preserve_hostname: false
+hostname: <hostname>
+timezone: Etc/UTC
+
+users:
+  - name: <admin>
+    groups: [sudo, sshusers]
+    shell: /bin/bash
+    lock_passwd: true
+    # The selected sudo policy is installed and tested by the first runcmd.
+    ssh_authorized_keys:
+      - <ssh-ed25519 AAAA... owner@laptop>
+
+groups: [sshusers]
+# Do not revoke the provider's recovery login before sudo is provisioned.
+# The staged SSH drop-in below disables root only after bootstrap succeeds.
+disable_root: false
+ssh_pwauth: false
+
+package_update: true
+package_upgrade: true
+packages:
+  - sudo
+  - ufw
+  - nftables
+  - fail2ban
+  - python3-systemd
+  - unattended-upgrades
+  - needrestart
+  - etckeeper
+  - curl
+  - git
+  - htop
+  - ncdu
+  - tmux
+  - jq
+
+write_files:
+  - path: /var/lib/vps-forge/00-vps-forge.conf
+    permissions: "0644"
+    content: |
+      PermitRootLogin no
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PermitEmptyPasswords no
+      PubkeyAuthentication yes
+      AuthenticationMethods publickey
+      AllowGroups sshusers
+      MaxAuthTries 5
+      MaxSessions 10
+      LoginGraceTime 30
+      ClientAliveInterval 300
+      ClientAliveCountMax 2
+      X11Forwarding no
+      AllowAgentForwarding no
+      PermitUserEnvironment no
+  # <ssh-port>: 22. This file leaves sshd and the ufw rule below on 22; move SSH later with
+  # the dead-man flow and update the jail's port at the same time.
+  - path: /etc/fail2ban/jail.d/vps-forge.local
+    permissions: "0644"
+    content: |
+      [DEFAULT]
+      backend = systemd
+      banaction = nftables-multiport
+      banaction_allports = nftables-allports
+      bantime = 1h
+      bantime.increment = true
+      bantime.maxtime = 1w
+      findtime = 10m
+      maxretry = 5
+      ignoreip = 127.0.0.1/8 ::1 <admin-ip>
+      [sshd]
+      enabled = true
+      port = <ssh-port>
+      mode = normal
+      [recidive]
+      enabled = true
+      backend = auto
+      logpath = /var/log/fail2ban.log
+      banaction = nftables-multiport
+      port = <ssh-port>
+      bantime = 1d
+      findtime = 1d
+      maxretry = 5
+  - path: /etc/apt/apt.conf.d/20auto-upgrades
+    permissions: "0644"
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+      APT::Periodic::AutocleanInterval "7";
+  - path: /etc/apt/apt.conf.d/52vps-forge-unattended
+    permissions: "0644"
+    content: |
+      Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+      Unattended-Upgrade::Remove-New-Unused-Dependencies "true";
+      Unattended-Upgrade::Remove-Unused-Dependencies "true";
+      Unattended-Upgrade::SyslogEnable "true";
+      Unattended-Upgrade::Automatic-Reboot "false";
+  - path: /etc/needrestart/conf.d/50-vps-forge.conf
+    permissions: "0644"
+    content: |
+      $nrconf{restart} = 'a';
+  - path: /etc/systemd/journald.conf.d/10-vps-forge.conf
+    permissions: "0644"
+    content: |
+      [Journal]
+      Storage=persistent
+      Compress=yes
+      SystemMaxUse=500M
+      SystemKeepFree=1G
+      MaxRetentionSec=1month
+  # Comments (rp_filter=2 on VPN gateways, BBR) live in assets/sysctl/99-vps-forge.conf.
+  - path: /etc/sysctl.d/99-vps-forge.conf
+    permissions: "0644"
+    content: |
+      net.ipv4.tcp_syncookies = 1
+      net.ipv4.conf.all.rp_filter = 1
+      net.ipv4.conf.default.rp_filter = 1
+      net.ipv4.conf.all.accept_redirects = 0
+      net.ipv4.conf.default.accept_redirects = 0
+      net.ipv4.conf.all.secure_redirects = 0
+      net.ipv4.conf.default.secure_redirects = 0
+      net.ipv6.conf.all.accept_redirects = 0
+      net.ipv6.conf.default.accept_redirects = 0
+      # IPv6 ignores conf.all here: set every interface (systemd-sysctl expands the glob at boot and
+      # for interfaces that appear later)
+      net.ipv6.conf.*.accept_redirects = 0
+      net.ipv4.conf.all.send_redirects = 0
+      net.ipv4.conf.default.send_redirects = 0
+      net.ipv4.conf.all.accept_source_route = 0
+      net.ipv4.conf.default.accept_source_route = 0
+      net.ipv6.conf.all.accept_source_route = 0
+      net.ipv6.conf.default.accept_source_route = 0
+      net.ipv4.icmp_echo_ignore_broadcasts = 1
+      net.ipv4.icmp_ignore_bogus_error_responses = 1
+      kernel.kptr_restrict = 2
+      kernel.dmesg_restrict = 1
+      kernel.randomize_va_space = 2
+      kernel.yama.ptrace_scope = 1
+      fs.protected_hardlinks = 1
+      fs.protected_symlinks = 1
+      fs.protected_fifos = 2
+      fs.protected_regular = 2
+      fs.suid_dumpable = 0
+      vm.swappiness = 10
+      net.core.default_qdisc = fq
+      net.ipv4.tcp_congestion_control = bbr
+
+runcmd:
+  # Stop the generated runcmd shell script if provisioning fails.
+  - set -e
+  # No secret is present in user-data or printed by this bootstrap. A failure
+  # leaves the restrictive SSH drop-in staged, not active (even after reboot).
+  - - python3
+    - -c
+    - |
+      import os
+      from pathlib import Path
+      import pwd
+      import re
+      import secrets
+      import subprocess
+      import tempfile
+
+      def run(*args, **kwargs):
+          return subprocess.run(args, check=True, capture_output=True, text=True, **kwargs)
+
+      def provision_admin(admin, policy):
+          if policy not in ("password", "nopasswd"):
+              raise ValueError("Choose the owner's sudo policy: password or nopasswd")
+          if not re.fullmatch(r"[a-z_][a-z0-9_-]*", admin) or admin == "root":
+              raise ValueError("Choose a non-root admin username")
+          account = pwd.getpwnam(admin)
+          if account.pw_uid == 0:
+              raise ValueError("The admin must not have UID 0")
+          password = None
+          rule_dir = Path("/etc/sudoers.d")
+          fd, candidate = tempfile.mkstemp(prefix=".vps-forge-", dir=rule_dir)
+          try:
+              with os.fdopen(fd, "w") as stream:
+                  tag = "PASSWD" if policy == "password" else "NOPASSWD"
+                  stream.write(f"{admin} ALL=(ALL) {tag}:ALL\n")
+              os.chmod(candidate, 0o440)
+              run("visudo", "-cf", candidate)
+              if policy == "password":
+                  # lock_passwd above deliberately starts with a locked account.
+                  # Create exclusively through a held directory fd: a user-owned
+                  # home or a pre-existing symlink must not redirect a root write.
+                  home_fd = os.open(account.pw_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                  try:
+                      secret_fd = os.open("SUDO-PASSWORD", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                                          0o600, dir_fd=home_fd)
+                      with os.fdopen(secret_fd, "w") as stream:
+                          os.fchmod(stream.fileno(), 0o600)
+                          password = secrets.token_urlsafe(24)
+                          stream.write(password + "\n")
+                          stream.flush()
+                          os.fsync(stream.fileno())
+                          run("chpasswd", input=f"{admin}:{password}\n")
+                          os.fchown(stream.fileno(), account.pw_uid, account.pw_gid)
+                  finally:
+                      os.close(home_fd)
+              os.replace(candidate, rule_dir / "99-vps-forge-admin")
+              run("visudo", "-c")
+              # A real sudo invocation must succeed before removing root access.
+              flags = ("-S", "-k", "-p", "") if policy == "password" else ("-n", "-k")
+              result = run("runuser", "-u", admin, "--", "sudo", *flags, "--", "id", "-u",
+                           input=(password + "\n") if password else "")
+              if result.stdout.strip() != "0":
+                  raise RuntimeError("The selected sudo policy did not provide root access")
+              target = Path("/etc/ssh/sshd_config.d/00-vps-forge.conf")
+              # Read from /var, write on /etc's filesystem (they may be separate).
+              fd, staged = tempfile.mkstemp(prefix=".vps-forge-", dir=target.parent)
+              try:
+                  with os.fdopen(fd, "wb") as stream:
+                      stream.write(Path("/var/lib/vps-forge/00-vps-forge.conf").read_bytes())
+                  os.chmod(staged, 0o644)
+                  os.replace(staged, target)
+              finally:
+                  Path(staged).unlink(missing_ok=True)
+          finally:
+              Path(candidate).unlink(missing_ok=True)
+
+      if __name__ == "__main__":
+          provision_admin("<admin>", "<sudo-policy>")
+  # Hardened crypto, generated from this target's own OpenSSH (names differ between versions;
+  # a copied list can stop sshd). Same picker as references/ssh.md. Dropped if sshd rejects it.
+  - - bash
+    - -c
+    - |
+      pick() { local have; have=$(ssh -Q "$1"); shift; local out=""; for a in "$@"; do grep -qx "$a" <<<"$have" && out+="${out:+,}$a"; done; echo "$out"; }
+      f=/etc/ssh/sshd_config.d/01-vps-forge-crypto.conf
+      {
+        echo "# Generated by vps-forge for $(ssh -V 2>&1)"
+        echo "HostKey /etc/ssh/ssh_host_ed25519_key"
+        echo "KexAlgorithms $(pick kex mlkem768x25519-sha256 sntrup761x25519-sha512 sntrup761x25519-sha512@openssh.com curve25519-sha256 curve25519-sha256@libssh.org)"
+        echo "Ciphers $(pick cipher chacha20-poly1305@openssh.com aes256-gcm@openssh.com aes128-gcm@openssh.com aes256-ctr aes192-ctr aes128-ctr)"
+        echo "MACs $(pick mac hmac-sha2-512-etm@openssh.com hmac-sha2-256-etm@openssh.com umac-128-etm@openssh.com)"
+      } > "$f"
+      sshd -t || rm -f "$f"
+  - [sh, -c, "sshd -t && systemctl reload ssh || true"]
+  - [ufw, default, deny, incoming]
+  - [ufw, default, allow, outgoing]
+  # The admin rule goes before `limit`: ufw matches in order, and limit ignores fail2ban's ignoreip.
+  - [ufw, allow, from, "<admin-ip>", to, any, port, "22", proto, tcp, comment, admin]
+  - [ufw, limit, "22/tcp", comment, ssh]
+  # - [ufw, allow, "80,443/tcp", comment, web]
+  - [ufw, --force, enable]
+  - [systemctl, enable, --now, fail2ban]
+  - [sysctl, --system]
+  - [systemctl, restart, systemd-journald]
+  - [sh, -c, "etckeeper commit 'vps-forge: first boot baseline' || true"]

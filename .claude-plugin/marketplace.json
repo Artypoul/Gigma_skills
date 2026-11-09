@@ -72,6 +72,12 @@
         "path": "plugins/gigma-mcp",
         "sha": "2d9332aa90baa51a09f4d9ef29127c4a2c71979c"
       }
+    },
+    {
+      "name": "devops-skills",
+      "version": "0.1.1",
+      "description": "DevOps generators and validators with VPS setup, audit and safe routing.",
+      "source": "./plugins/devops-skills"
     }
   ]
 }

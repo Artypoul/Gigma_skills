@@ -1,0 +1,8 @@
+{
+  "name": "devops-skills",
+  "version": "0.1.1",
+  "description": "DevOps generators and validators with VPS setup, audit and safe routing.",
+  "author": {
+    "name": "Akin Ozer and Hung Up"
+  }
+}
