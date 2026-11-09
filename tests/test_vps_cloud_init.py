@@ -65,8 +65,11 @@ class CloudInitAdminTests(unittest.TestCase):
         self.active = self.root / 'etc/ssh/sshd_config.d/00-vps-forge.conf'
         self.namespace = bootstrap_namespace()
         self.namespace['Path'] = self.map_path
+        # The administrator is never root, even in a root-run Linux container.
+        self.admin_uid = os.getuid() or 65534
+        self.admin_gid = os.getgid() if os.getuid() else 65534
         self.namespace['pwd'].getpwnam = lambda name: types.SimpleNamespace(
-            pw_uid=os.getuid(), pw_gid=os.getgid(), pw_dir=str(self.home))
+            pw_uid=self.admin_uid, pw_gid=self.admin_gid, pw_dir=str(self.home))
         self.password_state = 'L'
         self.password = None
         self.fail_command = None
@@ -111,7 +114,7 @@ class CloudInitAdminTests(unittest.TestCase):
         self.assertGreaterEqual(len(self.password), 24)
         self.assertEqual(secret.read_text().strip(), self.password)
         self.assertEqual(secret.stat().st_mode & 0o777, 0o600)
-        self.assertEqual(secret.stat().st_uid, os.getuid())
+        self.assertEqual(secret.stat().st_uid, self.admin_uid)
         self.assertEqual(self.active.read_text(), 'PermitRootLogin no\n')
         self.assertIn('PASSWD:ALL', (self.root / 'etc/sudoers.d/99-vps-forge-admin').read_text())
         self.assertFalse(any(self.password in str(args) for args in self.commands))
