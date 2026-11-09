@@ -1,5 +1,5 @@
 {
   "name": "gigma-erp",
   "description": "Операционные скилы Gigma ERP (api.gigma.ru): create-tenant — создать тенант/проект; load-nomenclature — залить каталог; setup-storefront — настроить витрину под ключ; request-agent-access — запросить agent token через письмо owner/admin; mcp-agent-access — выдать agent-user token для внешнего MCP-сервера; miniapp-auth — counterparty авторизация для MAX/Telegram miniapps; counterparty-callback-auth — вход клиента по звонку через callback_auth; connect-frontend-api — подключить frontend/storefront к API; receive-order-paid-webhook — принять и проверить order.paid webhook. Референс API/контрактов/багов — reference/erp-api.md.",
-  "version": "0.4.4"
+  "version": "0.4.5"
 }
