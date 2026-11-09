@@ -2,6 +2,10 @@
 # vps-forge first-boot template. Fill the <placeholders> from the server you hardened.
 # NO SECRETS in here: user-data is stored by the provider and readable via the metadata service.
 # Validate: cloud-init schema --config-file cloud-init.yaml
+# Gigma marketplace adaptation: select <sudo-policy> as password or nopasswd.
+# Password sudo generates ~/SUDO-PASSWORD (0600, admin-owned) on this server.
+# The OWNER reads it over their key-authenticated SSH session, saves it in their
+# password manager and deletes it. Never retrieve it into agent/chat logs.
 
 preserve_hostname: false
 hostname: <hostname>
@@ -12,17 +16,20 @@ users:
     groups: [sudo, sshusers]
     shell: /bin/bash
     lock_passwd: true
-    # sudo: "ALL=(ALL) NOPASSWD:ALL"   # only if the owner chose NOPASSWD sudo
+    # The selected sudo policy is installed and tested by the first runcmd.
     ssh_authorized_keys:
       - <ssh-ed25519 AAAA... owner@laptop>
 
 groups: [sshusers]
-disable_root: true
+# Do not revoke the provider's recovery login before sudo is provisioned.
+# The staged SSH drop-in below disables root only after bootstrap succeeds.
+disable_root: false
 ssh_pwauth: false
 
 package_update: true
 package_upgrade: true
 packages:
+  - sudo
   - ufw
   - nftables
   - fail2ban
@@ -38,7 +45,7 @@ packages:
   - jq
 
 write_files:
-  - path: /etc/ssh/sshd_config.d/00-vps-forge.conf
+  - path: /var/lib/vps-forge/00-vps-forge.conf
     permissions: "0644"
     content: |
       PermitRootLogin no
@@ -149,6 +156,82 @@ write_files:
       net.ipv4.tcp_congestion_control = bbr
 
 runcmd:
+  # Stop the generated runcmd shell script if provisioning fails.
+  - set -e
+  # No secret is present in user-data or printed by this bootstrap. A failure
+  # leaves the restrictive SSH drop-in staged, not active (even after reboot).
+  - - python3
+    - -c
+    - |
+      import os
+      from pathlib import Path
+      import pwd
+      import re
+      import secrets
+      import subprocess
+      import tempfile
+
+      def run(*args, **kwargs):
+          return subprocess.run(args, check=True, capture_output=True, text=True, **kwargs)
+
+      def provision_admin(admin, policy):
+          if policy not in ("password", "nopasswd"):
+              raise ValueError("Choose the owner's sudo policy: password or nopasswd")
+          if not re.fullmatch(r"[a-z_][a-z0-9_-]*", admin) or admin == "root":
+              raise ValueError("Choose a non-root admin username")
+          account = pwd.getpwnam(admin)
+          if account.pw_uid == 0:
+              raise ValueError("The admin must not have UID 0")
+          password = None
+          rule_dir = Path("/etc/sudoers.d")
+          fd, candidate = tempfile.mkstemp(prefix=".vps-forge-", dir=rule_dir)
+          try:
+              with os.fdopen(fd, "w") as stream:
+                  tag = "PASSWD" if policy == "password" else "NOPASSWD"
+                  stream.write(f"{admin} ALL=(ALL) {tag}:ALL\n")
+              os.chmod(candidate, 0o440)
+              run("visudo", "-cf", candidate)
+              if policy == "password":
+                  # lock_passwd above deliberately starts with a locked account.
+                  # Create exclusively through a held directory fd: a user-owned
+                  # home or a pre-existing symlink must not redirect a root write.
+                  home_fd = os.open(account.pw_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                  try:
+                      secret_fd = os.open("SUDO-PASSWORD", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                                          0o600, dir_fd=home_fd)
+                      with os.fdopen(secret_fd, "w") as stream:
+                          os.fchmod(stream.fileno(), 0o600)
+                          password = secrets.token_urlsafe(24)
+                          stream.write(password + "\n")
+                          stream.flush()
+                          os.fsync(stream.fileno())
+                          run("chpasswd", input=f"{admin}:{password}\n")
+                          os.fchown(stream.fileno(), account.pw_uid, account.pw_gid)
+                  finally:
+                      os.close(home_fd)
+              os.replace(candidate, rule_dir / "99-vps-forge-admin")
+              run("visudo", "-c")
+              # A real sudo invocation must succeed before removing root access.
+              flags = ("-S", "-k", "-p", "") if policy == "password" else ("-n", "-k")
+              result = run("runuser", "-u", admin, "--", "sudo", *flags, "--", "id", "-u",
+                           input=(password + "\n") if password else "")
+              if result.stdout.strip() != "0":
+                  raise RuntimeError("The selected sudo policy did not provide root access")
+              target = Path("/etc/ssh/sshd_config.d/00-vps-forge.conf")
+              # Read from /var, write on /etc's filesystem (they may be separate).
+              fd, staged = tempfile.mkstemp(prefix=".vps-forge-", dir=target.parent)
+              try:
+                  with os.fdopen(fd, "wb") as stream:
+                      stream.write(Path("/var/lib/vps-forge/00-vps-forge.conf").read_bytes())
+                  os.chmod(staged, 0o644)
+                  os.replace(staged, target)
+              finally:
+                  Path(staged).unlink(missing_ok=True)
+          finally:
+              Path(candidate).unlink(missing_ok=True)
+
+      if __name__ == "__main__":
+          provision_admin("<admin>", "<sudo-policy>")
   # Hardened crypto, generated from this target's own OpenSSH (names differ between versions;
   # a copied list can stop sshd). Same picker as references/ssh.md. Dropped if sshd rejects it.
   - - bash
