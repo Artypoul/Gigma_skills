@@ -1,0 +1,7 @@
+interface:
+  display_name: "Второй проход"
+  short_description: "Второй проход коротких задач с отчётом исправлений"
+  default_prompt: "Use $self-review-report to check the result, evidence, and permissions under the current project's review protocol, then report the verified status."
+
+policy:
+  allow_implicit_invocation: true

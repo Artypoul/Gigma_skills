@@ -37,7 +37,8 @@ jobs:
         working-directory: plugins/h2d-transfer/skills/h2d-pixel-perfect-transfer
         run: |
           python -m pip install -r requirements.txt
-          npm ci
+          # Fetch pinned tarballs from npm instead of the legacy mirror; keep integrity checks.
+          npm ci --registry=https://registry.npmjs.org --replace-registry-host=registry.npmmirror.com
           npx playwright install chromium
 
       - name: Run H2D integrity and browser regression tests
