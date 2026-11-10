@@ -1,0 +1,5 @@
+{
+  "name": "gigma-work-desktop",
+  "description": "Gigma Work Desktop stack skills for React, Tauri, Rust, runtime APIs, Windows packaging, and English documentation.",
+  "version": "0.1.0"
+}

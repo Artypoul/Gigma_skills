@@ -69,6 +69,16 @@ Generic frontend engineering skills for reusable project work, not tied to Gigma
 - Review: **`affordance-review`** — ловит скрытые UI-регрессии в keyboard/pointer affordance, cleanup, async hydration, conditional forms и form-save orchestration.
 - Финализация: **`pr-finalize`** — собирает repo-aware PR finalization flow: checks, required docs/history, Summary/Test plan и guardrails перед публикацией.
 
+### Gigma Work Desktop
+Плагин `gigma-work-desktop` собирает недостающие stack skills из Desktop-проекта в общем каталоге Gigma Skills.
+- `frontend-stack` — React, TypeScript, Vite, Tailwind, Zustand и renderer IPC boundaries.
+- `tauri-rust-stack` — Tauri commands, Rust lifecycle, Tokio tasks, WebView windows и IPC.
+- `runtime-api-stack` — локальный Runtime API, credentials, REST/WebSocket и smoke-проверки.
+- `windows-release-stack` — embedded CLI, NSIS/MSI, portable ZIP и release workflows.
+- `documentation-en` — English documentation audit и Unicode scanner для product docs.
+
+Источник skills — `plugins/gigma-work-desktop/skills/`. Зеркало `.codex/` пересобирается через `bash sync-codex.sh`, а манифесты Codex и Claude должны оставаться на одной версии.
+
 ### Backend workflow
 Generic backend engineering skills for API work with real domain risk, not tied to Gigma-only business logic.
 - Вход: **`ddd-api-standard`** — стандарт проектирования и ревью HTTP API (FastAPI, SQLAlchemy, PostgreSQL, Alembic): gates от evidence до verification, bounded contexts и aggregate boundaries, транзакции и конкурентность, idempotency, миграции, события и outbox, production quality gate. Объём работы скил выбирает по режиму (локальная правка / ревью / новый сервис) и по умолчанию не правит код.
