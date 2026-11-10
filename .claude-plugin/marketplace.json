@@ -48,6 +48,11 @@
       "description": "Generic frontend engineering skills for planning before code, RTK Query review, affordance and hidden-regression audits, and safe PR finalization across React and TypeScript web apps."
     },
     {
+      "name": "gigma-work-desktop",
+      "source": "./plugins/gigma-work-desktop",
+      "description": "Gigma Work Desktop stack skills for React, Tauri, Rust, runtime APIs, Windows packaging, and English documentation."
+    },
+    {
       "name": "backend-workflow",
       "source": "./plugins/backend-workflow",
       "description": "Generic backend engineering skills for DDD API design and review on FastAPI, SQLAlchemy, PostgreSQL and Alembic: bounded contexts, aggregates, transaction ownership, concurrency and isolation, idempotency contracts, migrations, events and outbox, plus an evidence-based production gate."

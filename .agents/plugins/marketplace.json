@@ -102,6 +102,19 @@
       "category": "Productivity"
     },
     {
+      "name": "gigma-work-desktop",
+      "source": {
+        "source": "local",
+        "path": "./plugins/gigma-work-desktop"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_USE"
+      },
+      "category": "Developer Tools",
+      "description": "Gigma Work Desktop stack skills for React, Tauri, Rust, runtime APIs, Windows packaging, and English documentation."
+    },
+    {
       "name": "backend-workflow",
       "source": {
         "source": "local",

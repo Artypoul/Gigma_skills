@@ -1,0 +1,20 @@
+{
+  "name": "gigma-work-desktop",
+  "version": "0.1.0",
+  "description": "Gigma Work Desktop stack skills for React, Tauri, Rust, runtime APIs, Windows packaging, and English documentation.",
+  "author": { "name": "Artypoul" },
+  "license": "MIT",
+  "keywords": ["gigma-work", "desktop", "tauri", "rust", "runtime", "windows", "documentation"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Gigma Work Desktop",
+    "shortDescription": "Desktop stack and release skills",
+    "longDescription": "Project skills for the Gigma Work Desktop stack, including renderer boundaries, Tauri and Rust lifecycle, local runtime API verification, Windows packaging, and English documentation audits.",
+    "developerName": "Artypoul",
+    "category": "Developer Tools",
+    "capabilities": ["Read", "Write"],
+    "defaultPrompt": [
+      "Use the relevant Gigma Work Desktop skill before changing the corresponding stack or release surface."
+    ]
+  }
+}
