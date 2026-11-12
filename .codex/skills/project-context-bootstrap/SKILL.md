@@ -17,6 +17,14 @@ Use this skill as the first pass in any repository when project truth matters. I
 - Do not create `project-memory.md` or any other context file unless the user explicitly asks to initialize project context.
 - Existing `project-memory.md` is operational memory: during an authorized change task, record only verified facts as they are established and immediately include each memory edit in the corresponding authorized commit. If commit is not authorized, do not edit memory. Do not add final or post-completion memory updates. Bootstrap and report-only tasks remain read-only; preserve unrelated dirty changes. This exception does not authorize creating missing memory, editing other documents or skills, changing product decisions, or commit/push, merge/deploy.
 
+## Target Lock Before Any Write
+
+Before any external or durable write, create one `Target Lock` record in the current context with `target_kind`, stable `target_id`, address or path, environment, source of truth, fingerprint or version, and the live `read-back` timestamp. A runbook, memory entry, copied URL, or previous chat is evidence to compare; it is not the live source of truth.
+
+Read the live inventory for the target and compare every identity field before the first write and again before each subsequent write. If a required field is missing or differs, stop with `context_stale`, show the `old -> current` difference and its source, and keep write and retry count at zero. Do not repair a stale lock by copying an address, ID, or fingerprint from another target. An intentional migration is a separate explicitly named target state with its own owner approval and post-write read-back.
+
+Keep the locked target attached to the requested scope. A changed target, environment, canonical repository root, or source-of-truth revision invalidates the lock and requires a new live read-back before work continues.
+
 ## Find The Project Root
 
 Before reading context, resolve the project root:

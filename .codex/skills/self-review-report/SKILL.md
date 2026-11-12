@@ -64,11 +64,11 @@ Do not reveal private reasoning or hidden chain-of-thought. Report only conclusi
 
 Do not send an unreviewed final response. The report does not replace repair or validation.
 
-The pre-response review remains instruction-only. The optional post-answer operation below is available only when the user's current workflow allows it and its hook is already explicitly configured and trusted. Installing this plugin does not authorize hook registration, controllers, persisted state, background workers, or configuration changes.
+The pre-response review remains instruction-only. The optional post-answer operation below was explicitly requested by Art. Do not introduce other controllers, persisted state, background workers, or configuration changes under that authorization.
 
 ### Второй проход короткой задачи — Post-answer Operation
 
-When explicitly enabled for this environment: after the first answer to a short task, automatically continue the same conversation once, re-check the actual task result, repair authorized defects, and report what changed. This is distinct from the private pre-response review. Do not infer activation from the presence of this skill or pretend that the pre-response review proves a post-answer continuation happened. A project or user protocol that requires only a text review takes precedence.
+Art approved this operation on 2026-10-10: after the first answer to a short task, automatically continue the same conversation once, re-check the actual task result, repair authorized defects, and report what changed. This is distinct from the private pre-response review. Do not pretend that the pre-response review proves a post-answer continuation happened.
 
 #### Select the scope
 
@@ -87,7 +87,7 @@ When the short-task operation applies, include the normal evidence-based Сам�
 
 This line declares a pending pass, not a completed one. Omit it for long workflows, stopped tasks, or an answer that is already the second-pass result. If the hook is not yet trusted/available, do not promise automatic execution; report the activation limitation instead.
 
-The optional Windows helper is [scripts/short-task-stop.ps1](scripts/short-task-stop.ps1). The plugin ships this file without registering it. Only after a separate user request may it be configured as a synchronous user-level `Stop` command in `~/.codex/hooks.json`, using the resolved installed script path and the normal trust flow. Do not register it automatically during installation, a review, or an ordinary task. It consumes documented hook input, requires the pending line at the end of `last_assistant_message`, and skips `stop_hook_active: true`. It reads no transcript or state files, starts no process, calls no API, and changes no permissions. It returns a fixed `decision: block` continuation prompt; Codex performs the next model turn. It does not create another chat, agent, scheduled automation, or repeated original operation.
+The Windows helper is [scripts/short-task-stop.ps1](scripts/short-task-stop.ps1), registered only as a synchronous user-level `Stop` command in `~/.codex/hooks.json`. It consumes documented hook input, requires the pending line at the end of `last_assistant_message`, and skips `stop_hook_active: true`. It reads no transcript or state files, starts no process, calls no API, and changes no permissions. It returns a fixed `decision: block` continuation prompt; Codex performs the next model turn. It does not create another chat, agent, scheduled automation, or repeated original operation.
 
 Codex requires native review and trust of the exact hook definition. Do not set trust hashes, use a trust-bypass flag, re-enable old quality controllers, or claim end-to-end activation from syntax checks. Use `/hooks` to review/trust the new entry. Official contract: [Codex Hooks](https://learn.chatgpt.com/docs/hooks), especially Stop and Review and trust hooks.
 
@@ -111,6 +111,12 @@ Keep the report proportionate. State the corrected result clearly when the first
 
 When auditing or updating this skill, read [evaluation scenarios](references/evaluation-scenarios.md) and check every case. Do not load that reference during ordinary task execution.
 
+### Evidence State in the Review
+
+Use one shared evidence state vocabulary in the review: `hypothesis`, `observed`, `confirmed`, `partial`, `recovered`, `unknown`, `blocked`, `ready`. Treat `ready` as invalid while any mandatory scope remains `partial`, `unknown`, or `blocked`; a `recovered` result becomes `ready` only after every mandatory evidence item is closed.
+
+When the result moves `partial -> recovered`, report the `new evidence`, the changed conclusion, and the remaining limits. For a root-cause claim, keep one separate line with `symptom`, `confirmed cause`, rejected hypotheses, and `unknown`; do not turn a tool failure or a restarting process into a confirmed cause.
+
 ### Report
 
 End every final response with a visible self-review report. For a `ready` direct answer that uses no tools and creates no artifact, use one compact line:
@@ -124,6 +130,7 @@ For tool use, multi-step work, artifacts, changes, or any non-ready result, end 
 - Статус: ready | partial | blocked | unknown
 - Результат: что фактически получено
 - Проверено: конкретные проверки или источники доказательств
+- Маршрут: `requested route` → `actual route` и причина изменения, если она была
 - Исправлено: нет | какие недочёты устранены до ответа
 - Ограничения: отсутствуют | что осталось непроверенным
 - Следующий шаг: только если он действительно нужен

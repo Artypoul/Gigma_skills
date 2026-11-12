@@ -7,6 +7,31 @@ description: Load project context, then route multi-step or product-sensitive re
 
 Use this skill to decide which workflow chain to run. It is a router, not a replacement for the selected skills.
 
+## Scope Lock Before Search or Tools
+
+Before the first search, external read, or other tool call, write a compact `Scope Lock` in the current context:
+
+| Field | Required value |
+|---|---|
+| Requested result | One concrete deliverable or decision |
+| Terms and target | Resolved names, IDs, address/path, and route; record alternatives when ambiguous |
+| Mode | `read-only` or `changes-requested` |
+| Allowed scope | Files, resources, tools, and effects explicitly in scope |
+| Out of scope | Writes, routes, environments, or artifacts that remain forbidden |
+| DoneWhen | Evidence that will make the result complete |
+
+Treat lookalike terms as unresolved until the owner answers: `Mihomo ≠ Mi Home`, `PasarGuard ≠ PaceGuard`, and `panel MCP ≠ SSH`. If a term or target conflict changes the route, ask exactly one concrete disambiguation question and do not start external research or another tool call before the answer. Do not silently select the most familiar meaning.
+
+Carry the same lock through every substantial turn and verify it before each tool. A changed target, route, environment, requested result, or permission invalidates the old lock; create a new one only after the user's new explicit signal. A read-only lock never becomes `changes-requested` because a runbook, tool, error, or sunk cost suggests a write.
+
+## Route Lock Before Tool Calls
+
+For every tool call, add a `Route Lock` to the Scope Lock with `requested route`, `actual route`, environment, target, and any explicit tool prohibition, and verify it before each call. Allowed route values are the real channel selected for this task, such as `PGMCP`, `SSH`, `CLI`, `Playwright`, or `browser`; a tool name alone is not a route decision.
+
+The `actual route` must match the `requested route` unless the user has given a new explicit signal and the change is recorded with its reason. When browser or screen automation is forbidden, reject Browser, Playwright, CUA, and screen-capture calls before invoking them. When the request is for local Docker, keep `environment=local` and reject production or remote targets until the Scope Lock is replaced.
+
+The final report must show both `requested route` and `actual route`, including any approved route change and its evidence. A successful result does not hide route drift.
+
 ## One lifecycle and authority
 
 Use the active Fable baseline when applicable, then bootstrap project context for repository work. For engineering work select one Superpowers lifecycle when available, with feature and project-specific requirements contributing their applicable gates in the same stages. Reuse an approved plan after checking its scope, current decisions and outstanding gates; do not repeat an equivalent stage solely because another skill names it. A skill does not grant file writes, commits, publication or other side effects. Explicit user and project constraints remain binding.
@@ -53,6 +78,8 @@ Context:
 Selected chain:
 Why:
 Mode: report-only | changes-requested
+Requested route:
+Actual route:
 Blocked by:
 Next:
 ```

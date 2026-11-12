@@ -25,6 +25,10 @@ a claim that every model has the same intelligence or tools.
    visual file, or delivery evidence for an external action.
 8. End with the outcome first: what changed, proof performed, and any concrete blocker.
 
+## Anti-Thrashing and Retry Budget
+
+For every blocker, keep a stable blocker fingerprint and an attempt count in the active plan. After three identical confirmed repeats, mark the task `blocked` and stop; do not start a fourth identical pass. Before each retry, name the changed hypothesis or the new external fact; when neither changed, reject the retry. Classify `tool failed` separately from `hypothesis falsified`: a failed tool call is not evidence that the technical hypothesis is false and does not justify repeating the same call without new evidence.
+
 ## Boundaries
 
 - A skill improves process discipline; it cannot add model weights, hidden context, persistence,
