@@ -122,4 +122,4 @@ description: Use when a VPS task needs a complete configuration audit, a node or
 
 ## Контрольные матрицы Node/Panel
 
-Используй [канонические операторские guardrails](C:/Users/Art/.codex/reference/operator-guardrails.md) для scope, идентичности, сетевой матрицы, geodata, подписки и приёмки. Этот скилл добавляет только специализированный алгоритм сравнения ниже и не копирует общий чек-лист.
+Используй [канонические операторские guardrails](../../reference/operator-guardrails.md) для scope, идентичности, сетевой матрицы, geodata, подписки и приёмки. Этот скилл добавляет только специализированный алгоритм сравнения ниже и не копирует общий чек-лист.
