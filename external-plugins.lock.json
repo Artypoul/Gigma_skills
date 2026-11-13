@@ -3,14 +3,14 @@
   "plugins": [
     {
       "name": "fable5-codex",
-      "version": "1.3.8",
+      "version": "1.3.9",
       "runtimes": [
         "codex"
       ],
       "source": {
         "source": "url",
         "url": "https://github.com/Artypoul/claude-fable-5-system-prompt.git",
-        "sha": "a21aef2f4af6531bff99e911e6ccb058cc3849f4"
+        "sha": "51cc002b74d015a1a14f8f5696f4cb1fd91a8616"
       },
       "skills": [
         "fable5-codex"
