@@ -36,6 +36,8 @@ The final report must show both `requested route` and `actual route`, including 
 
 Use the active Fable baseline when applicable, then bootstrap project context for repository work. For engineering work select one Superpowers lifecycle when available, with feature and project-specific requirements contributing their applicable gates in the same stages. Reuse an approved plan after checking its scope, current decisions and outstanding gates; do not repeat an equivalent stage solely because another skill names it. A skill does not grant file writes, commits, publication or other side effects. Explicit user and project constraints remain binding.
 
+Use the Task Acceptance section of `development-workflow:agent-session-execution` for meaningful project work, including work without an explicit Fable invocation. Carry the current agreed criteria in the existing `DoneWhen` through implementation, applicable review, and final verification. Update affected assignments after refinements or cancellations. Use the selected project or specialist workflow to gather evidence tied to the current result.
+
 ## Always Start
 
 1. Load project context first: run `project-context-bootstrap` when available and read the project-local `AGENTS.md` and memory files. Recorded decisions, blockers and current Git/PR state must inform the question instead of being asked about.

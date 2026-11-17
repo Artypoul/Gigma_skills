@@ -1,9 +1,10 @@
-"""Run one ordinary task via the installed app-server protocol.
+"""Collect ordinary tasks and assess explicit criteria through app-server.
 
 Current user configuration and global instructions are preserved. The runner
-creates one ephemeral, workspace-write evaluation thread. Reasoning items and
-encrypted fields are discarded before logging; native tool/delegation receipts
-and public messages are retained for independent inspection.
+creates one ephemeral thread (read-only unless explicitly selected otherwise).
+Completion and acceptance are separate. Multi-turn inputs and exact-match answers
+are synthetic test fixtures, never owner permission. Reasoning and credentials
+are removed from persisted observations.
 """
 
 from __future__ import annotations
@@ -29,6 +30,44 @@ COLLAB_NAMES = re.compile(
     r"(?:^|[.:/])(?:spawn_agent|followup_task|send_message|wait_agent|wait|"
     r"list_agents|interrupt_agent|spawnAgent|followupTask|sendInput)$"
 )
+SECRET_NAMES = r'(?:authorization|proxy[_.-]?authorization|cookie|set[_.-]?cookie|password|passwd|secret|client[_.-]?secret|api[_.-]?key|access[_.-]?token|refresh[_.-]?token|id[_.-]?token|bearer[_.-]?token|x[_.-]?control[_.-]?secret|x[_.-]?amz[_.-]?(?:signature|credential)|x[_.-]?goog[_.-]?(?:signature|credential)|signature|sig|token)'
+SECRET_KEY = re.compile(SECRET_NAMES, re.IGNORECASE)
+
+
+def redact_text(text):
+    # Decode JSON-shaped tool output before matching text; tokens often live in
+    # a JSON string nested inside an otherwise structured event.
+    if text.lstrip().startswith(('{', '[')):
+        try:
+            decoded = json.loads(text)
+        except (ValueError, RecursionError):
+            pass
+        else:
+            cleaned = safe_value(decoded)
+            return json.dumps(None if cleaned is OMIT else cleaned, ensure_ascii=False)
+    text = re.sub(r'(?im)(\b(?:authorization|proxy-authorization|cookie|set-cookie|x-control-secret)\s*[:=]\s*)[^\r\n]+', r'\1[REDACTED]', text)
+    text = re.sub(r'(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+', 'Bearer [REDACTED]', text)
+    text = re.sub(r'(?i)(\b' + SECRET_NAMES + r'''["']?\s*[=:]\s*)(?:"[^"]*"|'[^']*'|[^\s&;,]+)''', r'\1[REDACTED]', text)
+    text = re.sub(r'(?s)-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----', '[REDACTED PRIVATE KEY]', text)
+    return text
+
+
+def resolve_codex(explicit=None):
+    selected = explicit or os.environ.get('FABLE5_CODEX_BIN')
+    if selected:
+        path = Path(selected).expanduser().resolve(strict=True)
+        if not path.is_file():
+            raise FileNotFoundError('Selected Codex executable is not a file')
+        return str(path)
+    located = shutil.which('codex')
+    if located:
+        return located
+    resources = os.environ.get('CODEX_ELECTRON_RESOURCES_PATH')
+    if resources:
+        embedded = Path(resources) / ('codex.exe' if os.name == 'nt' else 'codex')
+        if embedded.is_file():
+            return str(embedded.resolve())
+    raise FileNotFoundError('Codex executable unavailable; pass --codex-bin explicitly')
 
 
 def sha(path: Path) -> str | None:
@@ -48,12 +87,17 @@ def safe_value(value):
                 "internal_chat_message_metadata_passthrough",
             }:
                 continue
+            if SECRET_KEY.fullmatch(key):
+                result[key] = '[REDACTED]'
+                continue
             cleaned = safe_value(child)
             if cleaned is not OMIT:
                 result[key] = cleaned
         return result
     if isinstance(value, list):
         return [cleaned for child in value if (cleaned := safe_value(child)) is not OMIT]
+    if isinstance(value, str):
+        return redact_text(value)
     return value
 
 
@@ -82,21 +126,20 @@ class RpcError(RuntimeError):
 
 
 class AppServer:
-    def __init__(self, cwd: Path, out: Path, deadline: float, codex_home: Path | None = None):
-        codex = shutil.which("codex")
-        if not codex:
-            raise RuntimeError("Codex executable is unavailable on PATH")
+    def __init__(self, cwd: Path, out: Path, deadline: float, codex_home: Path | None = None,
+                 codex_bin=None, answers=None):
+        codex = resolve_codex(codex_bin)
         env = os.environ.copy()
         env.pop("CODEX_THREAD_ID", None)
         if codex_home is not None:
             env['CODEX_HOME'] = str(codex_home)
         env['FABLE5_CODEX_BIN'] = codex
-        self.stderr = (out / "appserver-stderr.log").open("wb")
+        self.stderr = (out / "appserver-stderr.log").open("w", encoding='utf-8')
         self.events = (out / "appserver-events.jsonl").open("w", encoding="utf-8")
         self.process = subprocess.Popen(
             [codex, "app-server", "--stdio", "-c", "features.prefer_mxc=true",
              "-c", "sandbox_workspace_write.writable_roots=[]"], cwd=cwd, env=env,
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.stderr,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
         self.deadline = deadline
@@ -117,8 +160,30 @@ class AppServer:
         self.child_ids = set()
         self.client_requests = []
         self.errors = []
+        self.answer_fixtures = list(answers or [])
+        self.answered_requests = []
         self.reader = threading.Thread(target=self._read_stdout, daemon=True)
         self.reader.start()
+        self.stderr_reader = threading.Thread(target=self._read_stderr, daemon=True)
+        self.stderr_reader.start()
+
+    def _read_stderr(self):
+        for line in self.process.stderr:
+            self.stderr.write(redact_text(line.decode('utf-8', errors='replace')))
+            self.stderr.flush()
+
+    def run_turn(self, text, effort=None):
+        self.completed_turn = None
+        self.turn_id = None
+        params = {'threadId': self.root_id, 'input': [{'type': 'text', 'text': text}]}
+        if effort:
+            params['effort'] = effort
+        validate_known_request('v2/TurnStartParams.json', params)
+        response = self.rpc('turn/start', params, timeout=90)
+        self.turn_id = response['turn']['id']
+        while self.completed_turn is None:
+            self.pump()
+        return self.completed_turn
 
     def _read_stdout(self):
         try:
@@ -188,7 +253,19 @@ class AppServer:
 
     def _handle_request(self, message, line):
         method = message["method"]
-        self.client_requests.append({"event_line": line, "method": method, "params": safe_value(message.get('params', {}))})
+        params = message.get('params', {})
+        if method == 'item/tool/requestUserInput' and self.answer_fixtures:
+            fixture = self.answer_fixtures[0]
+            if (params.get('threadId') == self.root_id and params.get('turnId') == self.turn_id
+                    and params.get('questions') == fixture.get('questions')):
+                self.answer_fixtures.pop(0)
+                response = {'id': message['id'], 'result': {'answers': fixture['answers']}}
+                self.answered_requests.append({'event_line': line, 'fixture': True,
+                                              'questions': safe_value(params['questions'])})
+                self._record(response, 'synthetic_test_answer')
+                self._write(response)
+                return
+        self.client_requests.append({"event_line": line, "method": method, "params": safe_value(params)})
         # Never fabricate a user answer or accept an unexpected permission prompt.
         if method in {"item/commandExecution/requestApproval", "item/fileChange/requestApproval"}:
             response = {"id": message["id"], "result": {"decision": "decline"}}
@@ -303,6 +380,9 @@ class AppServer:
                 self.process.kill()
                 self.process.wait(timeout=5)
         self.events.close()
+        self.stderr_reader.join(timeout=5)
+        if self.stderr_reader.is_alive():
+            raise RuntimeError('stderr reader did not stop; observation is incomplete')
         self.stderr.close()
 
 
@@ -345,6 +425,256 @@ def public_child_reports(snapshots, messages, collab):
     return reports
 
 
+def file_inventory(paths):
+    """Hash declared files/directories without following directory links."""
+    result = {}
+    for name in paths:
+        path = Path(name).resolve(strict=True)
+        files = [path] if path.is_file() else sorted(path.rglob('*'))
+        for file in files:
+            if file.is_symlink() or any(p.is_symlink() for p in file.parents if p != path.parent):
+                raise ValueError('Evidence inventory cannot include symbolic links')
+            if file.is_file():
+                result[str(file)] = sha(file)
+    return result
+
+
+def read_json(path, default=None):
+    return json.loads(Path(path).read_text(encoding='utf-8-sig')) if path else default
+
+
+def validate_answers(fixtures):
+    if not isinstance(fixtures, list):
+        raise ValueError('Answer fixtures must be a list')
+    for fixture in fixtures:
+        if not isinstance(fixture, dict) or set(fixture) != {'questions', 'answers'}:
+            raise ValueError('Answer fixture requires exactly questions and answers')
+        questions, answers = fixture['questions'], fixture['answers']
+        if not isinstance(questions, list) or not questions or not isinstance(answers, dict):
+            raise ValueError('Invalid question/answer fixture')
+        ids = []
+        for question in questions:
+            if (not isinstance(question, dict) or question.get('isSecret')
+                    or not all(isinstance(question.get(k), str) and question[k] for k in ('id', 'header', 'question'))):
+                raise ValueError('Fixture questions must be explicit non-secret questions')
+            ids.append(question['id'])
+        if len(set(ids)) != len(ids) or set(answers) != set(ids):
+            raise ValueError('Answers must match the unique question ids')
+        for answer in answers.values():
+            if (not isinstance(answer, dict) or set(answer) != {'answers'}
+                    or not isinstance(answer['answers'], list) or not answer['answers']
+                    or not all(isinstance(x, str) for x in answer['answers'])):
+                raise ValueError('Answer must match ToolRequestUserInputResponse')
+    return fixtures
+
+
+def verdict(status, evidence):
+    return {'status': status, 'evidence': evidence}
+
+
+def event_items(events, root_id):
+    return [(number, event.get('params', {}).get('item', {}))
+            for number, event in enumerate(events, 1)
+            if event.get('params', {}).get('threadId') == root_id
+            and event.get('method') in {'item/started', 'item/completed', 'rawResponseItem/completed'}]
+
+
+def payload(item):
+    value = item.get('result') or {}
+    if value.get('isError'):
+        return {}
+    if isinstance(value.get('structuredContent'), dict):
+        return value['structuredContent']
+    for content in value.get('content', []):
+        if content.get('type') == 'text':
+            try:
+                decoded = json.loads(content.get('text', ''))
+                if isinstance(decoded, dict):
+                    return decoded
+            except ValueError:
+                pass
+    return {}
+
+
+def activation_order(native, events):
+    """Verify native receipts, never an assistant's claim that Fable is ready."""
+    items = event_items(events, native.get('thread_id'))
+    starts = [line for line, item in items if
+              (item.get('type') == 'subAgentActivity' and item.get('kind') == 'started')
+              or (item.get('type') == 'collabAgentToolCall' and item.get('tool') in {'spawnAgent', 'spawn_agent'})
+              or (item.get('type') in {'function_call', 'custom_tool_call'} and re.search(r'(?:^|[.:/])(?:spawn_agent|spawnAgent)$', item.get('name', '')))]
+    if not starts:
+        return verdict('not_checked', 'No native delegation event observed')
+    cutoff = min(starts)
+    def same_cwd(value):
+        return (isinstance(value, str) and bool(value.strip()) and Path(value).is_absolute()
+                and Path(value).resolve() == Path(native['cwd']).resolve())
+
+    def identity(skill):
+        return (isinstance(skill, dict)
+                and all(isinstance(skill.get(k), str) and skill[k].strip() for k in ('id', 'name', 'path', 'plugin_id'))
+                and isinstance(skill.get('sha256'), str) and re.fullmatch(r'[a-f0-9]{64}', skill['sha256']))
+
+    searches, reads, ready = [], [], []
+    for line, item in items:
+        if item.get('type') != 'mcpToolCall' or line >= cutoff:
+            continue
+        tool = item.get('tool', '').replace('-', '_')
+        if tool not in {'search_skills', 'read_skill', 'fable_status'}:
+            continue
+        if 'fable' not in item.get('server', '').lower():
+            continue
+        args = item.get('arguments') or {}
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except ValueError:
+                continue
+        if not isinstance(args, dict) or not same_cwd(args.get('cwd')):
+            continue
+        value = payload(item)
+        if item.get('status') not in {'completed', 'success'} or value.get('partial') is not False or value.get('warning_count') != 0:
+            continue
+        if tool == 'search_skills':
+            searches.append((line, value))
+        elif tool == 'read_skill':
+            reads.append((line, value))
+        elif value.get('status') == 'ready' and same_cwd(value.get('cwd')):
+            ready.append((line, value))
+    for line, state in ready:
+        selected = state.get('skills', {})
+        if (not isinstance(selected, dict)
+                or not all(key in selected for key in ('fable', 'using_superpowers', 'writing_plans'))
+                or not all(identity(skill) for skill in selected.values())):
+            continue
+        complete = True
+        for skill in selected.values():
+            discovered = [n for n, value in searches if n < line and value.get('catalog_sha256') == state.get('catalog_sha256')
+                          and any(isinstance(found, dict)
+                                  and all(found.get(k) == skill.get(k) for k in ('id', 'name', 'path', 'plugin_id'))
+                                  and ('sha256' not in found or found['sha256'] == skill['sha256'])
+                                  for found in value.get('skills', []))]
+            if not discovered:
+                complete = False
+                break
+            pages = [value for n, value in reads if min(discovered) < n < line
+                     and value.get('sha256') == skill.get('sha256')
+                     and all(value.get('skill', {}).get(k) == skill.get(k) for k in ('id', 'name', 'path', 'plugin_id'))]
+            end, total, pieces = 0, None, []
+            for page in sorted(pages, key=lambda p: p.get('offset', -1)):
+                if page.get('offset') != end or not isinstance(page.get('content'), str):
+                    continue
+                if total is not None and total != page.get('total_chars'):
+                    break
+                total = page.get('total_chars')
+                pieces.append(page['content'])
+                end += len(page['content'])
+            digest = hashlib.sha256(''.join(pieces).encode('utf-8')).hexdigest()
+            if not isinstance(total, int) or total <= 0 or end != total or digest != skill.get('sha256'):
+                complete = False
+                break
+        if complete and re.fullmatch(r'[a-f0-9]{64}', state.get('catalog_sha256', '')):
+            return verdict('satisfied', f'Complete matching discovery/read/ready receipts precede delegation at event {cutoff}')
+    return verdict('violated', 'Delegation occurred before complete matching activation evidence')
+
+
+def assess_observation(native, criteria, events, semantic=None):
+    """Mechanical evidence and an independently supplied semantic review stay separate."""
+    if not isinstance(criteria, dict) or set(criteria) - {'mechanical', 'semantic'}:
+        raise ValueError('Criteria must contain mechanical and/or semantic lists')
+    mechanical = criteria.get('mechanical', [])
+    semantic_ids = criteria.get('semantic', [])
+    allowed = {'completed', 'read_only', 'delegation', 'activation_before_delegation'}
+    reserved = allowed | {'profile_unchanged', 'candidate_unchanged', 'observation_complete', 'current_evidence'}
+    if (not isinstance(mechanical, list) or not isinstance(semantic_ids, list)
+            or not all(isinstance(x, str) and x for x in mechanical + semantic_ids)
+            or not set(mechanical).issubset(allowed)
+            or bool(set(semantic_ids) & reserved)
+            or len(set(mechanical + semantic_ids)) != len(mechanical + semantic_ids)):
+        raise ValueError('Unknown or duplicate acceptance criterion')
+    checks = {}
+    for before, after, key in [('config_hashes_before', 'config_hashes_after', 'profile_unchanged'),
+                               ('candidate_before', 'candidate_after', 'candidate_unchanged')]:
+        if not native.get(before) or not native.get(after):
+            checks[key] = verdict('not_checked', 'Missing before/after inventory')
+        else:
+            checks[key] = verdict('satisfied' if native[before] == native[after] else 'violated', 'Compared before/after hashes')
+    checks['observation_complete'] = verdict(
+        'violated' if native.get('observation_errors') or native.get('unexpected_client_requests') or native.get('status') != 'completed'
+        or any(child.get('errors') for child in native.get('children', {}).values())
+        or (native.get('planned_turn_count') is not None and len(native.get('turns', [])) != native['planned_turn_count'])
+        else 'satisfied', 'Native status, observation errors and unhandled client requests')
+    items = event_items(events, native.get('thread_id'))
+    for key in mechanical:
+        if key == 'completed':
+            check = verdict('satisfied' if native.get('status') == 'completed' else 'violated', 'Native turn status only; does not establish task correctness')
+        elif key == 'read_only':
+            # Include children and failed attempts. Hash equality alone cannot
+            # establish absence of writes outside the watched fixture.
+            all_items = [event.get('params', {}).get('item', {}) for event in events]
+            if any(item.get('type') == 'fileChange' for item in all_items) or native.get('watched_before') != native.get('watched_after'):
+                check = verdict('violated', 'A file-change attempt or changed watched file was observed')
+            elif any(item.get('type') in {'commandExecution', 'mcpToolCall', 'function_call', 'custom_tool_call', 'collabAgentToolCall', 'subAgentActivity'} for item in all_items):
+                check = verdict('not_checked', 'Tool effects require semantic review; a denied attempt also violates read-only')
+            elif native.get('sandbox') == 'read-only' and native.get('watched_before'):
+                check = verdict('satisfied', 'Read-only sandbox, unchanged watched files and no effectful tools')
+            else:
+                check = verdict('not_checked', 'Missing read-only sandbox or watched inventory')
+        elif key == 'activation_before_delegation':
+            check = activation_order(native, events)
+        else:
+            child_ids = {item.get('agentThreadId') for _, item in items if item.get('type') == 'subAgentActivity' and item.get('kind') == 'started'} - {None}
+            completed = {item.get('agentThreadId') for _, item in items if item.get('type') == 'subAgentActivity' and item.get('kind') == 'completed'}
+            reported = {cid for cid, reports in native.get('child_reports', {}).items()
+                        if any(r.get('phase') == 'final_answer' and r.get('text', '').strip() for r in reports)}
+            check = verdict('satisfied' if child_ids and child_ids <= completed & reported else 'not_checked', 'Requires native child start, completion and actual final report')
+        checks[key] = check
+    read_only_review = (semantic or {}).get('read_only', {})
+    if (checks.get('read_only', {}).get('status') == 'not_checked'
+            and read_only_review.get('status') in {'satisfied', 'violated'}
+            and read_only_review.get('evidence')):
+        checks['read_only'] = {**read_only_review, 'mechanical_status': 'not_checked',
+                               'source': 'independent_semantic_review'}
+    for key in semantic_ids:
+        review = (semantic or {}).get(key, {})
+        if review.get('status') not in {'satisfied', 'violated', 'not_checked', 'not_applicable'} or not review.get('evidence'):
+            checks[key] = verdict('not_checked', 'Independent semantic evidence is missing')
+        else:
+            checks[key] = review
+    states = [x['status'] for x in checks.values()]
+    status = 'failed' if 'violated' in states else 'incomplete' if not mechanical + semantic_ids or any(s in states for s in ('not_checked', 'not_applicable')) else 'passed'
+    return {'status': status, 'criteria': checks, 'scope': 'Declared criteria only; publication, installation and production acceptance are separate'}
+
+
+def assess_files(result_path, review_path):
+    """Bind an offline review to the exact immutable observation and criteria."""
+    path = Path(result_path).resolve(strict=True)
+    review = read_json(review_path)
+    native = read_json(path)
+    events_path = path.parent / 'appserver-events.jsonl'
+    criteria_path = path.parent / 'criteria.json'
+    expected = {'result_sha256': sha(path), 'events_sha256': sha(events_path), 'criteria_sha256': sha(criteria_path)}
+    if not all(review.get(k) == v and v for k, v in expected.items()) or not review.get('reviewer'):
+        raise ValueError('Review must identify its reviewer and match result/events/criteria hashes')
+    events = [json.loads(line) for line in events_path.read_text(encoding='utf-8').splitlines()]
+    assessment = assess_observation(native, read_json(criteria_path), events, review.get('criteria'))
+    # Assessment is current only while candidate and profile files still match.
+    recorded = {**native.get('candidate_after', {}), **native.get('profile_files_after', {})}
+    try:
+        current_candidate = file_inventory(native.get('candidate_roots', list(native.get('candidate_after', {}))))
+    except (OSError, ValueError):
+        current_candidate = None
+    if (not recorded or current_candidate != native.get('candidate_after')
+            or any(sha(Path(name)) != digest for name, digest in recorded.items())):
+        assessment['status'] = 'failed'
+        assessment['criteria']['current_evidence'] = verdict('violated', 'Candidate/profile changed since observation')
+    output = path.parent / 'acceptance-reviewed.json'
+    with output.open('x', encoding='utf-8') as stream:
+        json.dump(safe_value({**assessment, 'binding': expected, 'reviewer': review['reviewer']}), stream, ensure_ascii=False, indent=2)
+    print(json.dumps({'status': assessment['status'], 'assessment': str(output)}))
+    return 0 if assessment['status'] == 'passed' else 2
+
+
 def run(args):
     cwd = Path(args.cwd).resolve(strict=True)
     prompt_path = Path(args.prompt_file).resolve(strict=True)
@@ -353,14 +683,28 @@ def run(args):
         raise ValueError("--cwd must be an existing directory")
     out.mkdir(parents=True, exist_ok=False)
     prompt = prompt_path.read_text(encoding="utf-8")
-    (out / "prompt.txt").write_text(prompt, encoding="utf-8")
+    (out / "prompt.txt").write_text(redact_text(prompt), encoding="utf-8")
+    criteria = read_json(args.criteria_file, {})
+    assess_observation({}, criteria, [])  # Validate before starting a model.
+    turns = read_json(args.turns_file, [])
+    answers = validate_answers(read_json(args.answers_file, []))
+    if not isinstance(turns, list) or not all(isinstance(x, str) and x.strip() for x in turns):
+        raise ValueError('--turns-file must contain a JSON list of synthetic user messages')
+    (out / 'criteria.json').write_text(json.dumps(safe_value(criteria), ensure_ascii=False, indent=2), encoding='utf-8')
+    (out / 'synthetic-inputs.json').write_text(json.dumps(safe_value({'turns': turns, 'answers': answers}), ensure_ascii=False, indent=2), encoding='utf-8')
     home = Path(args.codex_home or os.environ.get("CODEX_HOME") or Path.home() / ".codex")
     before = {"global_instructions": sha(home / "AGENTS.md"), "user_config": sha(home / "config.toml")}
     started = time.monotonic()
     client = None
-    result = {"status": "starting", "cwd": str(cwd), "config_hashes_before": before}
+    profile_files = [home / 'AGENTS.md', home / 'config.toml']
+    result = {"status": "starting", "cwd": str(cwd), "config_hashes_before": before,
+              'sandbox': args.sandbox, 'profile_label': args.profile_label,
+              'candidate_roots': [str(Path(p).resolve()) for p in args.candidate_file],
+              'candidate_before': file_inventory(args.candidate_file),
+              'watched_before': file_inventory(args.watch), 'turns': []}
     try:
-        client = AppServer(cwd, out, started + args.timeout_seconds, codex_home=home)
+        client = AppServer(cwd, out, started + args.timeout_seconds, codex_home=home,
+                           codex_bin=args.codex_bin, answers=answers)
         initialize = {
             "clientInfo": {"name": "codex_behavior_evaluation", "title": "Workflow behavior evaluation", "version": "0.1.0"},
             "capabilities": {"experimentalApi": True, "optOutNotificationMethods": [
@@ -370,22 +714,26 @@ def run(args):
         validate_known_request("v1/InitializeParams.json", initialize)
         client.rpc("initialize", initialize, timeout=60)
         client.notify("initialized", {})
-        start = {"cwd": str(cwd), "approvalPolicy": "never", "sandbox": "workspace-write",
+        start = {"cwd": str(cwd), "approvalPolicy": "never", "sandbox": args.sandbox,
                  "ephemeral": True, "experimentalRawEvents": True}
         validate_known_request("v2/ThreadStartParams.json", start)
         response = client.rpc("thread/start", start, timeout=90)
         client.root_id = response["thread"]["id"]
         result["thread_id"] = client.root_id
         result["resolved_settings"] = {k: response.get(k) for k in ["model", "reasoningEffort", "approvalPolicy", "sandbox", "instructionSources"]}
-        turn = {"threadId": client.root_id, "input": [{"type": "text", "text": prompt}]}
-        validate_known_request("v2/TurnStartParams.json", turn)
-        response = client.rpc("turn/start", turn, timeout=90)
-        client.turn_id = response["turn"]["id"]
-        result["turn_id"] = client.turn_id
-        while client.completed_turn is None:
-            client.pump()
-        result["status"] = client.completed_turn.get("status", "unknown")
-        result["turn_error"] = client.completed_turn.get("error")
+        for text in [prompt, *turns]:
+            completed = client.run_turn(text)
+            result['turns'].append({'id': client.turn_id, 'status': completed.get('status'), 'error': completed.get('error')})
+            result['turn_id'] = client.turn_id
+            result['status'] = completed.get('status', 'unknown')
+            result['turn_error'] = completed.get('error')
+            if result['status'] != 'completed' or client.client_requests:
+                break
+        result['planned_turn_count'] = 1 + len(turns)
+        result['answered_requests'] = client.answered_requests
+        result['unused_answer_count'] = len(client.answer_fixtures)
+        if result['unused_answer_count']:
+            client.errors.append({'observation': 'unused_answer_fixtures'})
         snapshots = client.read_children()
         result["children"] = snapshots
         result["child_reports"] = public_child_reports(snapshots, client.public_messages, client.collab)
@@ -398,7 +746,7 @@ def run(args):
         final = final_messages[-1]["text"] if final_messages else ""
         if not final:
             final = next((text for (thread_id, _), text in reversed(list(client.deltas.items())) if thread_id == client.root_id), "")
-        (out / "final.md").write_text(final, encoding="utf-8")
+        (out / "final.md").write_text(redact_text(final), encoding="utf-8")
         result["child_reports_observed"] = [child_id for child_id, reports in result["child_reports"].items() if reports]
         result["unexpected_client_requests"] = client.client_requests
         result["observation_errors"] = client.errors
@@ -412,14 +760,33 @@ def run(args):
                 pass
     finally:
         if client:
-            client.close()
+            try:
+                client.close()
+            except Exception as error:
+                result['status'] = 'runner_error'
+                result['close_error'] = str(error)
+            result['observation_errors'] = client.errors
+            result['unexpected_client_requests'] = client.client_requests
         result["elapsed_seconds"] = round(time.monotonic() - started, 2)
         result["config_hashes_after"] = {"global_instructions": sha(home / "AGENTS.md"), "user_config": sha(home / "config.toml")}
+        result['profile_files_after'] = {str(p): sha(p) for p in profile_files}
+        try:
+            result['candidate_after'] = file_inventory(args.candidate_file)
+            result['watched_after'] = file_inventory(args.watch)
+        except (OSError, ValueError) as error:
+            result['status'] = 'runner_error'
+            result['inventory_error'] = str(error)
         (out / "result.json").write_text(json.dumps(safe_value(result), ensure_ascii=False, indent=2), encoding="utf-8")
+    events_path = out / 'appserver-events.jsonl'
+    events = [json.loads(line) for line in events_path.read_text(encoding='utf-8').splitlines()] if events_path.exists() else []
+    assessment = assess_observation(result, criteria, events)
+    (out / 'acceptance.json').write_text(json.dumps(safe_value(assessment), ensure_ascii=False, indent=2), encoding='utf-8')
     print(json.dumps({"status": result["status"], "result": str(out / "result.json"),
                       "child_report_count": len(result.get("child_reports_observed", [])),
                       "elapsed_seconds": result["elapsed_seconds"]}, ensure_ascii=False))
-    return 0 if result["status"] == "completed" else 1
+    if args.collection_only:
+        return 0 if result['status'] == 'completed' else 1
+    return 0 if assessment['status'] == 'passed' else 2
 
 
 def self_test():
@@ -456,10 +823,25 @@ if __name__ == "__main__":
     if sys.argv[1:] == ["--self-test"]:
         self_test()
         raise SystemExit(0)
+    if '--assess-result' in sys.argv:
+        parser = argparse.ArgumentParser(description='Review exact recorded evidence without starting an agent')
+        parser.add_argument('--assess-result', required=True)
+        parser.add_argument('--review-file', required=True)
+        opts = parser.parse_args()
+        raise SystemExit(assess_files(opts.assess_result, opts.review_file))
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cwd", required=True)
     parser.add_argument("--prompt-file", required=True)
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--timeout-seconds", type=int, default=900)
     parser.add_argument("--codex-home")
+    parser.add_argument('--codex-bin')
+    parser.add_argument('--sandbox', choices=['read-only', 'workspace-write'], default='read-only')
+    parser.add_argument('--collection-only', action='store_true', help='Collect evidence for an external assessor; exit zero does not mean accepted')
+    parser.add_argument('--criteria-file')
+    parser.add_argument('--turns-file')
+    parser.add_argument('--answers-file')
+    parser.add_argument('--candidate-file', action='append', default=[])
+    parser.add_argument('--watch', action='append', default=[])
+    parser.add_argument('--profile-label', default='current (not independently verified)')
     raise SystemExit(run(parser.parse_args()))

@@ -766,7 +766,8 @@ def preflight(candidate: dict, fixtures: dict, outside: Path, run_root: Path, co
 def _case_run(name: str, fixture: Path, run_root: Path, codex_home: Path) -> dict:
     output = run_root/'observations'/name
     result = _cmd([sys.executable,RESOURCES/'appserver_eval.py','--cwd',fixture,
-        '--prompt-file',RESOURCES/'prompts'/f'{name}.txt','--out-dir',output,'--codex-home',codex_home],
+        '--prompt-file',RESOURCES/'prompts'/f'{name}.txt','--out-dir',output,'--codex-home',codex_home,
+        '--collection-only','--sandbox','workspace-write'],
         HERE,env=_env(codex_home),timeout=1000)
     if result['exit_code'] or not (output/'result.json').exists():
         raise RuntimeError(f'{name}: app-server run failed: '+result['stderr'][:600])

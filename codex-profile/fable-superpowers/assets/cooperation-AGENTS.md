@@ -17,6 +17,7 @@ These are the user's standing workflow preferences for all Codex chats and proje
 
 ## One set of stages and evidence
 
+- For meaningful tasks, including work outside a repository, apply the Task Acceptance section of `development-workflow:agent-session-execution` once. Follow the applicable intake rules and complete the Fable 5 activation check when triggered.
 - Read the available project context before asking questions. Reuse existing requirements, decisions, designs, plans, task tracking, workspaces and applicable review results. One artifact or completed stage satisfies equivalent requirements from Fable, Superpowers and generic workflow/quality skills.
 - Keep one source of truth and one implementation plan. Create a separate design document only when complexity or project rules make it useful. Reopen completed stages only when changed scope, new evidence or a concrete unresolved finding justifies it. After compaction or handoff, recover the existing state and continue.
 - Load relevant skills once per applicable context; do not recursively invoke every router or reread unchanged manuals just because several plugins mention skill discovery. Preserve required specialist instructions and load new material when the task actually needs it.
@@ -31,7 +32,7 @@ These are the user's standing workflow preferences for all Codex chats and proje
 
 ## Delegation and runtime
 
-- **Delegation order when Fable is triggered.** When Fable is triggered, first complete the mandatory `search_skills` → `read_skill` → `fable_status` chain in the current working directory. Apply the general delegation rules afterward. While activation is `pending`, limit work to reading instructions, identifying the working directory, and checking activation. For `partial` or `blocked`, follow the Fable skill’s restrictions.
+- **Delegation order when Fable is triggered.** When Fable is triggered, first complete the mandatory `search_skills` → `read_skill` → `fable_status` chain in the current working directory. Apply the general delegation rules afterward. While activation is `pending`, limit work to reading instructions, identifying the working directory, and checking activation. For `partial` or `blocked`, follow the Fable skill's restrictions.
 - When delegation is authorized, route implementers and other non-review roles to `gpt-6.1-terra` with `reasoning_effort="high"` and independent reviewers to `gpt-6.1-sol` with `reasoning_effort="xhigh"` (Very High); apply the same role-based routing to nested agents. Follow the live spawn schema: set model and effort explicitly and use `fork_turns="none"`; full-history forks do not accept those overrides in this runtime. Pass the task and binding constraints explicitly. If the required model, effort or delegation is unavailable, report the blocker; never silently substitute another model or effort. Higher-priority or later explicit instructions govern changes to this routing.
 - Bound waits by the active runtime and communication limits; do not follow a skill's longer suggested timeout when it conflicts.
 

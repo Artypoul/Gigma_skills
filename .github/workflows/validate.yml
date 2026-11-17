@@ -18,6 +18,12 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Verify generated Codex mirror
+        run: |
+          bash sync-codex.sh
+          git diff --exit-code -- .codex
+          test -z "$(git ls-files --others --exclude-standard -- .codex)"
+
       - name: Validate plugins and Codex mirror
         run: python validate_plugin.py
 
@@ -61,6 +67,9 @@ jobs:
 
       - name: Test portable bootstrap, policy and profile
         run: python -B -m unittest discover -s codex-profile/tests -p "test_fable_superpowers_*.py"
+
+      - name: Test task acceptance evidence and negative cases
+        run: python -B -m unittest discover -s codex-profile/tests -p "test_agent_acceptance_eval.py"
 
       - name: Test updater contracts without credentials or model calls
         working-directory: codex-profile/fable-superpowers/scripts/updater
