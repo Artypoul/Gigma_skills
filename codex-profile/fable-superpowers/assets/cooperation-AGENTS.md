@@ -31,6 +31,7 @@ These are the user's standing workflow preferences for all Codex chats and proje
 
 ## Delegation and runtime
 
+- **Delegation order when Fable is triggered.** When Fable is triggered, first complete the mandatory `search_skills` → `read_skill` → `fable_status` chain in the current working directory. Apply the general delegation rules afterward. While activation is `pending`, limit work to reading instructions, identifying the working directory, and checking activation. For `partial` or `blocked`, follow the Fable skill’s restrictions.
 - When delegation is authorized, route implementers and other non-review roles to `gpt-6.1-terra` with `reasoning_effort="high"` and independent reviewers to `gpt-6.1-sol` with `reasoning_effort="xhigh"` (Very High); apply the same role-based routing to nested agents. Follow the live spawn schema: set model and effort explicitly and use `fork_turns="none"`; full-history forks do not accept those overrides in this runtime. Pass the task and binding constraints explicitly. If the required model, effort or delegation is unavailable, report the blocker; never silently substitute another model or effort. Higher-priority or later explicit instructions govern changes to this routing.
 - Bound waits by the active runtime and communication limits; do not follow a skill's longer suggested timeout when it conflicts.
 
