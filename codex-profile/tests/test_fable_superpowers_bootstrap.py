@@ -1,6 +1,7 @@
 """Portable setup tests use an isolated home and fake native catalogue only."""
 import importlib.util
 import json
+import os
 from pathlib import Path
 import shutil
 import sys
@@ -292,7 +293,7 @@ class SetupTests(unittest.TestCase):
         config=self.home/'config.toml';config.write_text('[unrelated]\nkeep="yes"\n[plugins."superpowers@gigma-skills"]\nenabled=true\n')
         before=config.read_bytes();(setup.state/'automation-request.json').mkdir(parents=True)
         with self.assertRaisesRegex(Exception,'rollback requires attention'):setup.install()
-        self.assertEqual(config.read_bytes(),before+'\n[plugins."fable5-codex@gigma-skills"]\nenabled=true\n'.encode())
+        self.assertEqual(config.read_bytes(),before+'\n[plugins."fable5-codex@gigma-skills"]\nenabled=true\n'.replace('\n',os.linesep).encode())
         self.assertEqual(bootstrap.settings(self.home)['plugins']['superpowers@gigma-skills'],{'enabled':True})
         self.assertNotIn(('remove','superpowers@gigma-skills'),self.backend.calls)
         self.assertTrue(any(row['name']=='superpowers' for row in self.backend.rows))
