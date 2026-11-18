@@ -157,7 +157,7 @@
       "source": {
         "source": "url",
         "url": "https://github.com/Artypoul/claude-fable-5-system-prompt.git",
-        "sha": "12893d702231419dad5d7bf50f4a531880db6b7b"
+        "sha": "d3bf4ca2cb0b6dace029c5af90d16f8434dc456c"
       },
       "policy": {
         "installation": "AVAILABLE",
