@@ -321,6 +321,45 @@ class AcceptanceTests(unittest.TestCase):
             'item': {'type': 'function_call', 'name': 'spawnAgent'}}})
         self.assertEqual(runner.assess_observation(self.observation(), {'mechanical': ['activation_before_delegation']}, events)['status'], 'failed')
 
+    def test_spawn_lifecycle_counts_dispatch_once(self):
+        import copy
+        events = self.activation_events()
+        start = {'method': 'item/started', 'params': {'threadId': 'parent', 'item': {
+            'id': 'one-spawn', 'type': 'collabAgentToolCall', 'tool': 'spawnAgent'}}}
+        complete = copy.deepcopy(start)
+        complete['method'] = 'item/completed'
+        blocked = copy.deepcopy(events[-2])
+        blocked['params']['item']['result']['structuredContent']['status'] = 'blocked'
+        events = events[:-1] + [start, blocked, complete]
+        check = lambda stream: runner.assess_observation(
+            self.observation(), {'mechanical': ['activation_before_delegation']}, stream)['status']
+        self.assertEqual(check(events), 'passed')
+        new = copy.deepcopy(start)
+        new['params']['item']['id'] = 'two-spawn'
+        self.assertEqual(check(events + [new]), 'failed')
+        self.assertEqual(check(events + self.activation_events()[:-1] + [new]), 'passed')
+        self.assertEqual(check([start] + self.activation_events()[:-1] + [complete]), 'failed')
+        no_id = copy.deepcopy(start)
+        no_id['params']['item'].pop('id')
+        self.assertEqual(check(events + [no_id]), 'failed')
+        other_thread = copy.deepcopy(start)
+        other_thread['params']['threadId'] = 'other'
+        self.assertEqual(check(self.activation_events()[:-1] + [other_thread, blocked, start]), 'failed')
+
+    def test_raw_spawn_receipts_share_call_id_but_early_call_is_checked(self):
+        import copy
+        events = self.activation_events()
+        raw = {'method': 'rawResponseItem/completed', 'params': {'threadId': 'parent', 'item': {
+            'type': 'function_call', 'name': 'spawnAgent', 'call_id': 'call-1'}}}
+        start = {'method': 'item/started', 'params': {'threadId': 'parent', 'item': {
+            'id': 'item-1', 'call_id': 'call-1', 'type': 'collabAgentToolCall', 'tool': 'spawnAgent'}}}
+        blocked = copy.deepcopy(events[-2])
+        blocked['params']['item']['result']['structuredContent']['status'] = 'blocked'
+        check = lambda stream: runner.assess_observation(
+            self.observation(), {'mechanical': ['activation_before_delegation']}, stream)['status']
+        self.assertEqual(check(events[:-1] + [raw, blocked, start]), 'passed')
+        self.assertEqual(check([raw] + events[:-1] + [start]), 'failed')
+
     def test_conflicting_discovery_digest_is_not_ignored_when_supplied(self):
         import copy
         events = self.activation_events()

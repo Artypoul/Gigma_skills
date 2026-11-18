@@ -1,5 +1,6 @@
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -21,6 +22,14 @@ class ClaudeSyncTests(unittest.TestCase):
             ['bash', str(ROOT / 'sync-claude.sh'), '--dest', str(self.dest), *args],
             text=True, capture_output=True, check=False,
         )
+
+    def symlink(self, link, target):
+        try:
+            link.symlink_to(target)
+        except OSError:
+            if sys.platform == 'win32':
+                self.skipTest('creating symlinks requires Windows privileges')
+            raise
 
     def managed_names(self):
         manifest = self.dest / '.gigma-managed-skills'
@@ -69,6 +78,37 @@ class ClaudeSyncTests(unittest.TestCase):
         completed = self.sync('--plugin', 'vps-support')
         self.assertEqual(completed.returncode, 3)
         self.assertEqual(extra.read_bytes(), b'personal file')
+        self.assertNotIn('vps-connect', self.managed_names())
+        self.assertIn('vps-connect', completed.stdout + completed.stderr)
+
+    def test_unmanaged_symlinks_are_preserved(self):
+        for broken in (False, True):
+            with self.subTest(broken=broken):
+                shutil.rmtree(self.dest, ignore_errors=True)
+                self.skill.parent.mkdir(parents=True)
+                shutil.copytree(CANON, self.skill, ignore=shutil.ignore_patterns('__pycache__'))
+                target = Path(self.temp.name) / 'private-target'
+                if target.exists():
+                    target.unlink()
+                if not broken:
+                    target.write_text('private data')
+                link = self.skill / 'private-notes.txt'
+                self.symlink(link, target)
+                completed = self.sync('--plugin', 'vps-support')
+                self.assertEqual(completed.returncode, 3)
+                self.assertTrue(link.is_symlink())
+                self.assertEqual(link.readlink(), target)
+                if not broken:
+                    self.assertEqual(target.read_text(), 'private data')
+                self.assertNotIn('vps-connect', self.managed_names())
+                self.assertIn('vps-connect', completed.stdout + completed.stderr)
+
+    def test_unmanaged_broken_skill_symlink_is_preserved(self):
+        self.skill.parent.mkdir(parents=True)
+        self.symlink(self.skill, Path(self.temp.name) / 'missing')
+        completed = self.sync('--plugin', 'vps-support')
+        self.assertEqual(completed.returncode, 3)
+        self.assertTrue(self.skill.is_symlink())
         self.assertNotIn('vps-connect', self.managed_names())
         self.assertIn('vps-connect', completed.stdout + completed.stderr)
 

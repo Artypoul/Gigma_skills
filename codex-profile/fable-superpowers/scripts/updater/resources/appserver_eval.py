@@ -499,10 +499,22 @@ def payload(item):
 def activation_order(native, events):
     """Verify native receipts, never an assistant's claim that Fable is ready."""
     items = event_items(events, native.get('thread_id'))
-    starts = [line for line, item in items if
-              (item.get('type') == 'subAgentActivity' and item.get('kind') == 'started')
-              or (item.get('type') == 'collabAgentToolCall' and item.get('tool') in {'spawnAgent', 'spawn_agent'})
-              or (item.get('type') in {'function_call', 'custom_tool_call'} and re.search(r'(?:^|[.:/])(?:spawn_agent|spawnAgent)$', item.get('name', '')))]
+    starts, seen_calls = set(), set()
+    for line, item in items:
+        is_spawn = ((item.get('type') == 'subAgentActivity' and item.get('kind') == 'started')
+                    or (item.get('type') == 'collabAgentToolCall' and item.get('tool') in {'spawnAgent', 'spawn_agent'})
+                    or (item.get('type') in {'function_call', 'custom_tool_call'} and re.search(r'(?:^|[.:/])(?:spawn_agent|spawnAgent)$', item.get('name', ''))))
+        if not is_spawn:
+            continue
+        # Count the earliest observed receipt for an invocation, including raw
+        # calls. Missing IDs are never evidence that two events are the same.
+        keys = {(key, item[key]) for key in ('id', 'call_id', 'callId')
+                if isinstance(item.get(key), str) and item[key]}
+        # Normalize the two spellings of call IDs.
+        keys = {('call_id' if key == 'callId' else key, value) for key, value in keys}
+        if not keys or not keys.intersection(seen_calls):
+            starts.add(line)
+        seen_calls.update(keys)
     if not starts:
         return verdict('not_checked', 'No native delegation event observed')
     def same_cwd(value):

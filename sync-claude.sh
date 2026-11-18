@@ -69,7 +69,10 @@ file_list() { (cd "$1" && find . -type f -not -path '*/__pycache__/*' | sort); }
 # Неуправляемую копию можно принять только при полном совпадении файлов.
 looks_like_our_copy() {
   local canon="$1" target="$2" rel
-  [ -f "$target/SKILL.md" ] || return 1
+  [ ! -L "$target" ] && [ -f "$target/SKILL.md" ] || return 1
+  # Non-regular entries cannot be proven identical by the regular-file comparison.
+  [ -z "$(find "$target" -type d -name __pycache__ -prune -o \( ! -type d ! -type f -print -quit \))" ] || return 1
+  [ -z "$(find "$canon" -type d -name __pycache__ -prune -o \( ! -type d ! -type f -print -quit \))" ] || return 1
   [ "$(file_list "$canon")" = "$(file_list "$target")" ] || return 1
   while IFS= read -r rel; do
     cmp -s "$canon/$rel" "$target/$rel" || return 1
@@ -90,7 +93,7 @@ for name in "${plugins[@]}"; do
       skill_name="$(basename "$skill")"
       target="$dest/skills/$skill_name"
 
-      if [ -e "$target" ] && ! is_managed "$skill_name" && ! is_adopted "$skill_name" \
+      if { [ -e "$target" ] || [ -L "$target" ]; } && ! is_managed "$skill_name" && ! is_adopted "$skill_name" \
          && ! looks_like_our_copy "$skill" "$target"; then
         conflicts+=("$skill_name")
         continue

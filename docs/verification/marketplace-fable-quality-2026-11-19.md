@@ -16,21 +16,24 @@ The lock and Codex marketplace propose the same Fable version and SHA. Other ups
 
 ## Changes and review
 
-- F1 preserves unmanaged personal skills with different bytes unless explicitly adopted. F2 applies effective skill enablement, including selectors, and prevents disabled required skills from yielding ready.
+- F1 preserves unmanaged personal skills with different bytes or non-regular entries unless explicitly adopted. F2 applies effective skill enablement, including selectors, and prevents disabled required skills from yielding ready.
 - F3 binds updater health to the selected profile, installed path and digest. F4 recognizes the two supported Fable plugin identities without accepting ambiguous copies; Superpowers retains its exact production identity.
-- F5 invalidates stale activation evidence on later negative or changed state before delegation. F6 prepares the request before completion, verifies actual recovery before reporting rollback, and preserves conflicting concurrent data for recovery.
+- F5 invalidates stale activation evidence on later negative or changed state before delegation; repeated lifecycle receipts for the same identified spawn count once at its earliest observed dispatch. F6 prepares the request before completion, verifies actual recovery before reporting rollback, and preserves conflicting concurrent data for recovery.
 - Independent `gpt-6.1-sol/xhigh` reviews approved Task 1, corrected Task 2, Task 3, Task 4, corrected Task 5 and corrected Task 6. Review led to quoted comment handling, distinguishing same-name registrations, and preserving pre-existing plugin settings during removal. Controller-reproduced withdrawal and publication races were corrected before the Task 6 review. The final Fable review found the real namespaced native health name and a literal `../` selector test missing; local `86ec55b` corrected both, and the scoped code/package re-review approved the fix. Fresh model evidence remained a separate open finding.
 - Four other Gigma jobs passed in [CI run 44378707170](https://github.com/Artypoul/Gigma_skills/actions/runs/44378707170). The first Windows CI at remote `cecb775340051668acf4a5b4a337860c72d367c7` failed one LF-only test expectation (99 tests run); the test-only newline correction passed 71 focused tests on Linux. The corrected local head `a421b8a` was published as `54339ab442869c8494590ea2a2d501d4f22c0ff0`; [CI run 44382666617](https://github.com/Artypoul/Gigma_skills/actions/runs/44382666617) passed its Windows portable/bootstrap/acceptance/updater job `135078834090` and Ubuntu portable job `135078833961`; three other jobs remained in progress at this snapshot. This closes the demonstrated Windows newline failure for that pre-pin tree only.
+
+The final review found two further Gigma issues: unmanaged symlinks could be removed during sync, and a spawn completion could be mistaken for a new delegation after invalidation. A final fix wave protects non-regular entries and counts an identified invocation at its earliest observed receipt. Its scoped independent re-review and final-head CI are pending; earlier reviews and CI do not approve this fix wave. On pre-fix remote `1638bc10e15c704e2d8120e2bed1884eba450542`, CI run `44383945404` had validate, Ubuntu portable and Windows portable jobs passing while two contract jobs were still in progress at the last read. Those are historical results, not final-head CI.
 
 ## Checks and package
 
 | Command or evidence | Result |
 | --- | --- |
-| `python -B validate_plugin.py` after pin | exit 0; 13 local plugins, 116 local skills, 3 pinned plugins, 22 declared upstream skills |
-| `python -B -m unittest discover -s tests -p 'test_*.py'` after pin | exit 0; 29 passed |
+| `python -B validate_plugin.py` after final fix | exit 0; 13 local plugins, 116 local skills, 3 pinned plugins, 22 declared upstream skills |
+| `python -B -m unittest discover -s tests -p 'test_*.py'` after final fix | exit 0; 31 passed |
 | `bash sync-codex.sh`, `git diff --exit-code -- .codex`, and untracked mirror check before the pin | exit 0; 116 skills and 47 references, clean mirror |
-| `python -B -m unittest discover -s codex-profile/tests -v` on unchanged production sources | exit 0; 145 run, 140 passed, 5 PowerShell skips |
-| updater `python -B -m unittest -v test_core test_native test_source test_compatibility test_sandbox` | exit 0; 107 run, 103 passed, 4 Windows-native sandbox skips |
+| `python -B -m unittest discover -s codex-profile/tests -p 'test_*.py'` after final fix | exit 0; 147 run, 142 passed, 5 PowerShell skips |
+| Focused final fix suites: `python -B -m unittest discover -s tests -p 'test_sync_claude.py' -v`; `python -B -m unittest discover -s codex-profile/tests -p 'test_agent_acceptance_eval.py' -v` | exit 0; 8 and 48 passed respectively. Before the fix, the same suites failed 3 symlink subcases and 2 spawn receipt cases. Symlink tests skip on Windows only if symlink creation is unavailable. |
+| updater `python -B -m unittest -v test_core test_native test_source test_compatibility test_sandbox` after final fix | exit 0; 107 run, 103 passed, 4 Windows-native sandbox skips |
 | Fable `npm run build`; `node --test test/update-native.test.mjs test/catalog.test.mjs`; `npm test` | exit 0; build succeeded, 60 focused and 94 full Node tests passed. Rebuild reproduced the three generated output hashes. Only invalid npm-prefixed HTTP proxy settings were omitted; normal proxy settings remained. |
 | Fable `python -B -m unittest discover -s tests -v` | exit 1; 80 run, 79 passed, one error: historical model observation is stale after instruction changes. Test and observation are unchanged; this is an open gate, not a pass. |
 | Fable packaging | `python -B scripts/package_plugin.py --output <output.zip>` exit 0 (output path abbreviated); exact 96-file ZIP SHA-256 `6f7a69395042f611bfe84d825b1ad2412964565a26312395fe88309d4e01ef76`; sorted inventory SHA-256 `005d6342a4ce66bc54b94d9d9802d51599e62d13cf9645f44c94a3b257dbccdb`. Independent enumeration, extraction and byte comparisons matched; 11 input and 3 output hashes were independently verified. |
