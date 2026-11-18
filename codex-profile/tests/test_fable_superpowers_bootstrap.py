@@ -287,6 +287,39 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(self.setup().install()['status'],'unchanged')
         self.assertNotIn(('remove','superpowers@gigma-skills'),self.backend.calls)
 
+    def test_rollback_preserves_preexisting_enabled_setting_before_removal(self):
+        setup=self.setup();self.home.mkdir(parents=True)
+        config=self.home/'config.toml';config.write_text('[unrelated]\nkeep="yes"\n[plugins."superpowers@gigma-skills"]\nenabled=true\n')
+        before=config.read_bytes();(setup.state/'automation-request.json').mkdir(parents=True)
+        with self.assertRaisesRegex(Exception,'rollback requires attention'):setup.install()
+        self.assertEqual(config.read_bytes(),before+'\n[plugins."fable5-codex@gigma-skills"]\nenabled=true\n'.encode())
+        self.assertEqual(bootstrap.settings(self.home)['plugins']['superpowers@gigma-skills'],{'enabled':True})
+        self.assertNotIn(('remove','superpowers@gigma-skills'),self.backend.calls)
+        self.assertTrue(any(row['name']=='superpowers' for row in self.backend.rows))
+        self.assertEqual(json.loads(setup.journal.read_text())['phase'],'recovery_required')
+
+    def test_rollback_preserves_concurrently_extended_plugin_setting(self):
+        setup=self.setup();(setup.state/'automation-request.json').mkdir(parents=True)
+        def extend(point):
+            if point=='after_install':
+                path=self.home/'config.toml';path.write_text(path.read_text()+'user_choice="keep"\n')
+        setup.failpoint=extend
+        with self.assertRaisesRegex(Exception,'rollback requires attention'):setup.install()
+        self.assertEqual(bootstrap.settings(self.home)['plugins']['superpowers@gigma-skills']['user_choice'],'keep')
+        self.assertNotIn(('remove','superpowers@gigma-skills'),self.backend.calls)
+        self.assertEqual(json.loads(setup.journal.read_text())['phase'],'recovery_required')
+
+    def test_legacy_recovery_without_setting_snapshot_preserves_plugin(self):
+        def interrupt(point):
+            if point=='after_install':raise KeyboardInterrupt()
+        setup=self.setup(failpoint=interrupt)
+        with self.assertRaises(KeyboardInterrupt):setup.install()
+        journal=json.loads(setup.journal.read_text());journal.pop('old_plugin_setting');write_json(setup.journal,journal)
+        before=(self.home/'config.toml').read_bytes()
+        with self.assertRaisesRegex(Conflict,'setting cannot be safely removed'):self.setup().install()
+        self.assertEqual((self.home/'config.toml').read_bytes(),before)
+        self.assertNotIn(('remove','superpowers@gigma-skills'),self.backend.calls)
+
     def test_unconfirmed_native_removal_is_not_reported_as_rollback(self):
         setup=self.setup();(setup.state/'automation-request.json').mkdir(parents=True)
         with patch.object(self.backend,'remove',return_value=None):

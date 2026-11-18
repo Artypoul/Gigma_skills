@@ -339,6 +339,10 @@ class Setup:
             if not cache.is_dir() or inventory(cache)!=value['inventory']:
                 raise Conflict('Installed Superpowers cache changed or cannot be identified; recovery preserves it.')
             if value.get('installed_row') and row!=value['installed_row']:raise Conflict('Installed Superpowers state changed; recovery preserves it.')
+            old_setting=value.get('old_plugin_setting');current_plugins=settings(self.home).get('plugins',{})
+            if (not old_setting or old_setting['present'] or
+                (PLUGIN in current_plugins and current_plugins[PLUGIN]!={'enabled':True})):
+                raise Conflict('Superpowers setting cannot be safely removed; it is preserved for recovery.')
             # Only this newly created plugin is removed. Other settings are never restored wholesale.
             self.backend.remove(PLUGIN)
         if any(row.get('pluginId')==PLUGIN for row in self.backend.installed()):
