@@ -141,6 +141,68 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(result['status'],'rolled_back');self.assertFalse(path.exists())
         self.assertFalse(any(row['name']=='superpowers' for row in self.backend.rows))
 
+    def test_publication_replacement_preserves_concurrent_edit(self):
+        setup=self.setup();path=setup.state/'automation-request.json';path.parent.mkdir(parents=True);path.write_bytes(b'previous')
+        replace=bootstrap.os.replace;rename=bootstrap.os.rename
+        def race_replace(src,dst):
+            if Path(dst)==path:path.write_bytes(b'concurrent publication edit')
+            return replace(src,dst)
+        def race_rename(src,dst):
+            if Path(src)==path:path.write_bytes(b'concurrent publication edit')
+            return rename(src,dst)
+        with patch('bootstrap.os.replace',side_effect=race_replace), patch('bootstrap.os.rename',side_effect=race_rename):
+            with self.assertRaisesRegex(Exception,'rollback requires attention'):setup.install()
+        self.assertEqual(path.read_bytes(),b'concurrent publication edit')
+
+    def test_publication_withdrawal_interruption_restores_previous_request(self):
+        setup=self.setup();path=setup.state/'automation-request.json';path.parent.mkdir(parents=True);path.write_bytes(b'previous')
+        rename=bootstrap.os.rename
+        def interrupt(src,dst):
+            rename(src,dst)
+            if Path(src)==path:raise KeyboardInterrupt()
+        with patch('bootstrap.os.rename',side_effect=interrupt):
+            with self.assertRaises(KeyboardInterrupt):setup.install()
+        self.assertEqual(self.setup().install()['status'],'recovered')
+        self.assertEqual(path.read_bytes(),b'previous')
+
+    def test_publication_preserves_new_path_created_after_withdrawal(self):
+        setup=self.setup();path=setup.state/'automation-request.json';path.parent.mkdir(parents=True);path.write_bytes(b'previous')
+        rename=bootstrap.os.rename
+        def race(src,dst):
+            rename(src,dst)
+            if Path(src)==path:path.write_bytes(b'new concurrent path')
+        with patch('bootstrap.os.rename',side_effect=race):
+            with self.assertRaisesRegex(Exception,'rollback requires attention'):setup.install()
+        self.assertEqual(path.read_bytes(),b'new concurrent path')
+        self.assertEqual(json.loads(setup.journal.read_text())['phase'],'recovery_required')
+
+    def test_existing_install_publication_preserves_concurrent_edit(self):
+        self.setup().install();setup=self.setup();path=setup.state/'automation-request.json';path.write_bytes(b'previous')
+        replace=bootstrap.os.replace;rename=bootstrap.os.rename
+        def race_replace(src,dst):
+            if Path(dst)==path:path.write_bytes(b'concurrent edit')
+            return replace(src,dst)
+        def race_rename(src,dst):
+            if Path(src)==path:path.write_bytes(b'concurrent edit')
+            return rename(src,dst)
+        with patch('bootstrap.os.replace',side_effect=race_replace), patch('bootstrap.os.rename',side_effect=race_rename):
+            with self.assertRaises(Exception):setup.install()
+        self.assertEqual(path.read_bytes(),b'concurrent edit')
+        self.assertTrue(any(row['name']=='superpowers' for row in self.backend.rows))
+
+    def test_existing_install_resumes_interrupted_request_publication(self):
+        self.setup().install();setup=self.setup();path=setup.state/'automation-request.json';path.write_bytes(b'previous')
+        rename=bootstrap.os.rename
+        def interrupt(src,dst):
+            rename(src,dst)
+            if Path(src)==path:raise KeyboardInterrupt()
+        with patch('bootstrap.os.rename',side_effect=interrupt):
+            with self.assertRaises(KeyboardInterrupt):setup.install()
+        self.assertFalse(path.exists())
+        result=self.setup().install();self.assertEqual(result['status'],'unchanged')
+        self.assertEqual(json.loads(path.read_text()),result['automation'])
+        self.assertTrue(any(row['name']=='superpowers' for row in self.backend.rows))
+
     def test_request_deletion_race_preserves_concurrent_edit(self):
         setup=self.setup();path=setup.state/'automation-request.json';write=bootstrap.write_json;unlink=Path.unlink;rename=bootstrap.os.rename
         def fail_complete(target,value):

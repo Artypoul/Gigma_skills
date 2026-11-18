@@ -309,6 +309,7 @@ class Setup:
         if request:
             path=self.state/'automation-request.json'
             if path.is_symlink():raise Conflict('Automation request changed; recovery preserves it.')
+            self.recover_request_publication(request)
             current_request=path.read_bytes() if path.exists() else None
             old_request=bytes.fromhex(request['old_hex']) if request['old_hex'] is not None else None
             new_request=bytes.fromhex(request['new_hex'])
@@ -373,20 +374,55 @@ class Setup:
         return {'backend':deepcopy(self.backend.context()),'package':inventory(path),'policy':digest(self.home/'AGENTS.md'),
             'settings':settings(self.home),'source':str(Path(path).resolve())}
 
+    def recover_request_publication(self,request):
+        name=request.get('publication_backup')
+        if not name:return
+        if not re.fullmatch(r'automation-publication-[0-9a-f]{32}\.json',name):
+            raise Conflict('Invalid automation publication backup; it is preserved.')
+        path=self.state/'automation-request.json';backup=self.state/name
+        if not backup.exists() and not backup.is_symlink():return
+        if backup.is_symlink() or not backup.is_file():raise Conflict('Automation publication backup is not a regular file.')
+        captured=backup.read_bytes();old=bytes.fromhex(request['old_hex'])
+        if captured!=old:
+            if not path.exists() and not path.is_symlink():create_owned(path,captured)
+            raise Conflict('Automation request changed during publication; it is preserved.')
+        if not request.get('published') and not path.exists() and not path.is_symlink():create_owned(path,old)
+
     def automation(self,factory,transaction=None):
-        request=factory(self.home,self.root);path=self.state/'automation-request.json'
-        if transaction is None:write_json(path,request)
-        else:
-            if path.is_symlink():raise Conflict('Automation request is a symbolic link.')
-            old=path.read_bytes() if path.exists() else None
-            new=(json.dumps(request,ensure_ascii=False,indent=2)+'\n').encode()
-            transaction['automation_request']={'old_hex':old.hex() if old is not None else None,'new_hex':new.hex()}
-            write_json(self.journal,transaction)
-            if old!=new:
-                if old is None:create_owned(path,new)
-                else:atomic_write(path,new,expected=old)
-                transaction['automation_request']['published']=True
-                write_json(self.journal,transaction)
+        path=self.state/'automation-request.json';standalone=self.state/'automation-transaction.json'
+        if standalone.exists():
+            pending=json.loads(standalone.read_text())
+            if pending.get('phase')=='prepared':
+                previous=pending['automation_request'];self.recover_request_publication(previous)
+                old=bytes.fromhex(previous['old_hex']) if previous['old_hex'] is not None else None
+                current=path.read_bytes() if path.exists() and not path.is_symlink() else None
+                if path.is_symlink() or current!=old:raise Conflict('Pending automation publication needs attention; request is preserved.')
+                pending['phase']='rolled_back';write_json(standalone,pending)
+        request=factory(self.home,self.root)
+        if path.is_symlink():raise Conflict('Automation request is a symbolic link.')
+        old=path.read_bytes() if path.exists() else None
+        new=(json.dumps(request,ensure_ascii=False,indent=2)+'\n').encode()
+        if transaction is None:
+            transaction={'phase':'prepared'};journal=standalone
+        else:journal=self.journal
+        details={'old_hex':old.hex() if old is not None else None,'new_hex':new.hex()}
+        transaction['automation_request']=details
+        if old!=new and old is not None:details['publication_backup']='automation-publication-'+uuid.uuid4().hex+'.json'
+        write_json(journal,transaction)
+        if old!=new:
+            if old is not None:
+                backup=self.state/details['publication_backup']
+                os.rename(path,backup)
+                if backup.is_symlink() or not backup.is_file():raise Conflict('Automation publication backup is not a regular file.')
+                captured=backup.read_bytes()
+                if captured!=old:
+                    if not path.exists() and not path.is_symlink():create_owned(path,captured)
+                    raise Conflict('Automation request changed during publication; it is preserved.')
+            create_owned(path,new)
+            details['published']=True
+            if journal==self.journal:write_json(journal,transaction)
+        if journal==standalone:
+            transaction['phase']='complete';write_json(journal,transaction)
         return {'automation':request,'automation_request_path':str(path)}
 
     def install(self):
