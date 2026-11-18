@@ -305,6 +305,15 @@ class Setup:
         if current.hex() not in [value['old_marketplace_hex'],value['new_marketplace_hex']]:raise Conflict('Marketplace changed after interrupted setup; recovery preserves it.')
         if value.get('source') and inventory(value['source'])!=value['inventory']:
             raise Conflict('Managed source changed after interrupted setup; recovery preserves it.')
+        request=value.get('automation_request')
+        if request:
+            path=self.state/'automation-request.json'
+            if path.is_symlink():raise Conflict('Automation request changed; recovery preserves it.')
+            current_request=path.read_bytes() if path.exists() else None
+            old_request=bytes.fromhex(request['old_hex']) if request['old_hex'] is not None else None
+            new_request=bytes.fromhex(request['new_hex'])
+            if current_request!=old_request and (current_request!=new_request or not request.get('published')):
+                raise Conflict('Automation request changed or publication is unconfirmed; recovery preserves it.')
         rows=[x for x in self.backend.installed() if x.get('pluginId')==PLUGIN]
         if rows:
             if len(rows)!=1:raise Conflict('Ambiguous installed Superpowers state; recovery preserves it.')
@@ -327,6 +336,17 @@ class Setup:
             if value.get('installed_row') and row!=value['installed_row']:raise Conflict('Installed Superpowers state changed; recovery preserves it.')
             # Only this newly created plugin is removed. Other settings are never restored wholesale.
             self.backend.remove(PLUGIN)
+        if any(row.get('pluginId')==PLUGIN for row in self.backend.installed()):
+            raise Conflict('Native plugin removal could not be confirmed.')
+        if 'old_plugin_setting' in value:
+            old_setting=value['old_plugin_setting'];current_plugins=settings(self.home).get('plugins',{})
+            if old_setting['present']!=(PLUGIN in current_plugins) or (old_setting['present'] and old_setting['value']!=current_plugins[PLUGIN]):
+                raise Conflict('Superpowers setting was not restored; it is preserved for recovery.')
+        if request and current_request!=old_request:
+            if old_request is None:
+                if path.read_bytes()!=current_request:raise Conflict('Automation request changed during recovery.')
+                path.unlink()
+            else:atomic_write(path,old_request,expected=current_request)
         old=bytes.fromhex(value['old_marketplace_hex'])
         if current!=old:atomic_write(self.marketplace,old,expected=current)
         write_json(self.state/'marketplace-owned.json',{'schema':1,'manifest_hex':old.hex(),'source_root':str(self.catalog)})
@@ -337,9 +357,20 @@ class Setup:
         return {'backend':deepcopy(self.backend.context()),'package':inventory(path),'policy':digest(self.home/'AGENTS.md'),
             'settings':settings(self.home),'source':str(Path(path).resolve())}
 
-    def automation(self,factory):
+    def automation(self,factory,transaction=None):
         request=factory(self.home,self.root);path=self.state/'automation-request.json'
-        write_json(path,request)
+        if transaction is None:write_json(path,request)
+        else:
+            if path.is_symlink():raise Conflict('Automation request is a symbolic link.')
+            old=path.read_bytes() if path.exists() else None
+            new=(json.dumps(request,ensure_ascii=False,indent=2)+'\n').encode()
+            transaction['automation_request']={'old_hex':old.hex() if old is not None else None,'new_hex':new.hex()}
+            write_json(self.journal,transaction)
+            if old!=new:
+                if old is None:create_owned(path,new)
+                else:atomic_write(path,new,expected=old)
+                transaction['automation_request']['published']=True
+                write_json(self.journal,transaction)
         return {'automation':request,'automation_request_path':str(path)}
 
     def install(self):
@@ -395,7 +426,10 @@ class Setup:
             manifest=json.loads(old_marketplace.decode('utf-8-sig'))
             next(x for x in manifest['plugins'] if x['name']=='superpowers')['source']={'source':'local','path':'./'+destination.relative_to(self.root).as_posix()}
             encoded=(json.dumps(manifest,ensure_ascii=False,indent=2)+'\n').encode()
-            transaction={'phase':'activating','owns_new_plugin':True,'version':candidate['version'],'source':str(destination),'inventory':files,
+            old_plugins=before.get('plugins',{})
+            old_setting={'present':PLUGIN in old_plugins}
+            if old_setting['present']:old_setting['value']=old_plugins[PLUGIN]
+            transaction={'phase':'activating','owns_new_plugin':True,'old_plugin_setting':old_setting,'version':candidate['version'],'source':str(destination),'inventory':files,
                 'old_marketplace_hex':old_marketplace.hex(),'new_marketplace_hex':encoded.hex(),'verification_context':verified_backend}
             write_json(self.journal,transaction)
             try:
@@ -418,13 +452,18 @@ class Setup:
                 if context['backend']!=verified_backend or context['package']!=files:raise Conflict('Verification context changed before completion.')
                 write_json(self.state/'bootstrap-verified.json',{'context':context,'checks':checks,'candidate':candidate})
                 write_json(self.state/'marketplace-owned.json',{'schema':1,'manifest_hex':encoded.hex(),'source_root':str(self.catalog)})
+                result={'status':'installed','version':candidate['version'],'checks':checks,'health':health,'policy':policy,'runtime':runtime,
+                    **self.automation(automation_request,transaction)}
                 transaction.update(phase='complete',health=health);write_json(self.journal,transaction)
-                return {'status':'installed','version':candidate['version'],'checks':checks,'health':health,'policy':policy,'runtime':runtime,
-                    **self.automation(automation_request)}
+                return result
             except Exception as error:
-                try:self.recover()
+                try:
+                    recovered=self.recover()
+                    if not recovered:raise Conflict('No recoverable bootstrap transaction was found.')
                 except Exception as recovery_error:
-                    transaction.update(phase='recovery_required',error=str(error),recovery_error=str(recovery_error));write_json(self.journal,transaction)
+                    recorded=json.loads(self.journal.read_text()) if self.journal.exists() else {}
+                    if recorded.get('phase') in {'activating','installed','recovery_required'}:
+                        recorded.update(phase='recovery_required',error=str(error),recovery_error=str(recovery_error));write_json(self.journal,recorded)
                     raise UpdateError('Bootstrap rollback requires attention; unrelated changes were preserved.') from recovery_error
                 return {'status':'rolled_back','reason':str(error)}
 
