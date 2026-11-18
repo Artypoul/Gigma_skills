@@ -558,7 +558,7 @@ def activation_order(native, events):
     def conflicting_skill(left, right):
         if not isinstance(left, dict) or not isinstance(right, dict):
             return False
-        if not any(left.get(k) and left.get(k) == right.get(k) for k in ('id', 'name')):
+        if not left.get('id') or left.get('id') != right.get('id'):
             return False
         return any(left.get(k) is not None and right.get(k) is not None and left[k] != right[k]
                    for k in ('id', 'name', 'path', 'plugin_id', 'sha256'))

@@ -214,6 +214,27 @@ class AcceptanceTests(unittest.TestCase):
         events.insert(-1, copy.deepcopy(events[0]))
         self.assertEqual(runner.assess_observation(self.observation(), {'mechanical': ['activation_before_delegation']}, events)['status'], 'passed')
 
+    def test_repeated_discovery_and_reads_of_distinct_namesakes_preserve_activation(self):
+        import copy
+        for read_index in (0, 1):
+            with self.subTest(read_index=read_index):
+                events = self.activation_events()
+                discovery = copy.deepcopy(events[0])
+                skills = []
+                for index in (0, 1):
+                    content = 'review fixture ' + str(index)
+                    skills.append({'id': 'review-' + str(index), 'name': 'review',
+                                   'path': '/skills/review-' + str(index), 'plugin_id': 'plugin-' + str(index),
+                                   'sha256': hashlib.sha256(content.encode()).hexdigest()})
+                discovery['params']['item']['result']['structuredContent']['skills'] = skills
+                read = copy.deepcopy(events[1])
+                content = 'review fixture ' + str(read_index)
+                read['params']['item']['result']['structuredContent'].update(
+                    skill=skills[read_index], sha256=skills[read_index]['sha256'],
+                    content=content, total_chars=len(content))
+                events[-1:-1] = [discovery, copy.deepcopy(discovery), read]
+                self.assertEqual(runner.assess_observation(self.observation(), {'mechanical': ['activation_before_delegation']}, events)['status'], 'passed')
+
     def test_unrelated_skill_read_after_ready_preserves_activation(self):
         import copy
         events = self.activation_events()
