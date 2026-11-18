@@ -3,14 +3,14 @@
   "plugins": [
     {
       "name": "fable5-codex",
-      "version": "1.3.11",
+      "version": "1.4.0",
       "runtimes": [
         "codex"
       ],
       "source": {
         "source": "url",
         "url": "https://github.com/Artypoul/claude-fable-5-system-prompt.git",
-        "sha": "41d2664af126a1f386872a7094f59917d35c3f32"
+        "sha": "c23a791c60781003b51386562e1b224b9cb3da2c"
       },
       "skills": [
         "fable5-codex"
@@ -21,7 +21,7 @@
         "Node.js 20+"
       ],
       "manifest": ".codex-plugin/plugin.json",
-      "note": "Upstream ships a Codex manifest only; keep the source archive and MCP package in their original repository."
+      "note": "Upstream Codex package remains complete in its source repository. Listed CLI/Node requirements apply to native Codex/MCP. ChatGPT GitHub mode reads pinned instructions through the connected integration; task execution and review require actual host capabilities."
     },
     {
       "name": "superpowers",
