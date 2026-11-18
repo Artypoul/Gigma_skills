@@ -505,7 +505,6 @@ def activation_order(native, events):
               or (item.get('type') in {'function_call', 'custom_tool_call'} and re.search(r'(?:^|[.:/])(?:spawn_agent|spawnAgent)$', item.get('name', '')))]
     if not starts:
         return verdict('not_checked', 'No native delegation event observed')
-    cutoff = min(starts)
     def same_cwd(value):
         return (isinstance(value, str) and bool(value.strip()) and Path(value).is_absolute()
                 and Path(value).resolve() == Path(native['cwd']).resolve())
@@ -515,38 +514,13 @@ def activation_order(native, events):
                 and all(isinstance(skill.get(k), str) and skill[k].strip() for k in ('id', 'name', 'path', 'plugin_id'))
                 and isinstance(skill.get('sha256'), str) and re.fullmatch(r'[a-f0-9]{64}', skill['sha256']))
 
-    searches, reads, ready = [], [], []
-    for line, item in items:
-        if item.get('type') != 'mcpToolCall' or line >= cutoff:
-            continue
-        tool = item.get('tool', '').replace('-', '_')
-        if tool not in {'search_skills', 'read_skill', 'fable_status'}:
-            continue
-        if 'fable' not in item.get('server', '').lower():
-            continue
-        args = item.get('arguments') or {}
-        if isinstance(args, str):
-            try:
-                args = json.loads(args)
-            except ValueError:
-                continue
-        if not isinstance(args, dict) or not same_cwd(args.get('cwd')):
-            continue
-        value = payload(item)
-        if item.get('status') not in {'completed', 'success'} or value.get('partial') is not False or value.get('warning_count') != 0:
-            continue
-        if tool == 'search_skills':
-            searches.append((line, value))
-        elif tool == 'read_skill':
-            reads.append((line, value))
-        elif value.get('status') == 'ready' and same_cwd(value.get('cwd')):
-            ready.append((line, value))
-    for line, state in ready:
+    searches, reads = [], []
+    def complete_activation(line, state):
         selected = state.get('skills', {})
         if (not isinstance(selected, dict)
                 or not all(key in selected for key in ('fable', 'using_superpowers', 'writing_plans'))
                 or not all(identity(skill) for skill in selected.values())):
-            continue
+            return False
         complete = True
         for skill in selected.values():
             discovered = [n for n, value in searches if n < line and value.get('catalog_sha256') == state.get('catalog_sha256')
@@ -574,8 +548,60 @@ def activation_order(native, events):
                 complete = False
                 break
         if complete and re.fullmatch(r'[a-f0-9]{64}', state.get('catalog_sha256', '')):
-            return verdict('satisfied', f'Complete matching discovery/read/ready receipts precede delegation at event {cutoff}')
-    return verdict('violated', 'Delegation occurred before complete matching activation evidence')
+            return True
+        return False
+
+    active = False
+    selected = {}
+    for line, item in items:
+        if line in starts:
+            if not active:
+                return verdict('violated', f'Delegation at event {line} lacked current complete activation evidence')
+            continue
+        if (events[line - 1].get('method') != 'item/completed' or item.get('type') != 'mcpToolCall'
+                or item.get('tool', '').replace('-', '_') not in {'search_skills', 'read_skill', 'fable_status'}):
+            continue
+        if 'fable' not in item.get('server', '').lower():
+            continue
+        args = item.get('arguments') or {}
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except ValueError:
+                continue
+        if not isinstance(args, dict) or not same_cwd(args.get('cwd')):
+            continue
+        tool = item.get('tool', '').replace('-', '_')
+        value = payload(item)
+        if item.get('status') not in {'completed', 'success'} or value.get('partial') is not False or value.get('warning_count') != 0:
+            searches, reads, active, selected = [], [], False, {}
+            continue
+        if tool == 'fable_status':
+            candidate = value.get('skills', {})
+            if value.get('status') != 'ready' or not same_cwd(value.get('cwd')):
+                searches, reads, active, selected = [], [], False, {}
+            elif active and candidate != selected:
+                searches, reads, active, selected = [], [], False, {}
+            else:
+                active = complete_activation(line, value)
+                selected = candidate if active else {}
+                if not active:
+                    searches, reads = [], []
+        else:
+            # A new discovery starts a new activation; old reads cannot establish it.
+            if active and tool == 'search_skills':
+                searches, reads, active, selected = [], [], False, {}
+            if active and tool == 'read_skill':
+                skill = value.get('skill', {})
+                if (not isinstance(skill, dict) or not any(
+                        all(skill.get(k) == chosen.get(k) for k in ('id', 'name', 'path', 'plugin_id'))
+                        and value.get('sha256') == chosen.get('sha256') for chosen in selected.values())):
+                    searches, reads, active, selected = [], [], False, {}
+            if tool == 'search_skills':
+                searches.append((line, value))
+            else:
+                reads.append((line, value))
+    return verdict('satisfied', 'Complete matching activation receipts precede every delegation')
 
 
 def assess_observation(native, criteria, events, semantic=None):

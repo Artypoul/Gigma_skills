@@ -163,6 +163,80 @@ class AcceptanceTests(unittest.TestCase):
         result = runner.assess_observation(self.observation(), {'mechanical': ['activation_before_delegation']}, self.activation_events())
         self.assertEqual(result['status'], 'passed')
 
+    def test_blocked_status_invalidates_prior_activation(self):
+        import copy
+        events = self.activation_events()
+        blocked = copy.deepcopy(events[-2])
+        blocked['params']['item']['result']['structuredContent']['status'] = 'blocked'
+        events.insert(-1, blocked)
+        result = runner.assess_observation(self.observation(), {'mechanical': ['activation_before_delegation']}, events)
+        self.assertEqual(result['status'], 'failed')
+        self.assertNotEqual(result['criteria']['activation_before_delegation']['status'], 'satisfied')
+
+    def test_later_invalid_receipts_invalidate_activation(self):
+        import copy
+        for mutation in ['partial', 'warning', 'error', 'failed', 'cwd', 'identity']:
+            with self.subTest(mutation=mutation):
+                events = self.activation_events()
+                receipt = copy.deepcopy(events[-2])
+                item = receipt['params']['item']
+                value = item['result']['structuredContent']
+                if mutation == 'partial': value['partial'] = True
+                elif mutation == 'warning': value['warning_count'] = 1
+                elif mutation == 'error': item['result']['isError'] = True
+                elif mutation == 'failed': item['status'] = 'failed'
+                elif mutation == 'cwd': value['cwd'] = str(ROOT.parent)
+                else: value['skills']['fable']['plugin_id'] = 'different'
+                events.insert(-1, receipt)
+                result = runner.assess_observation(self.observation(), {'mechanical': ['activation_before_delegation']}, events)
+                self.assertEqual(result['status'], 'failed')
+
+    def test_later_conflicting_read_invalidates_activation(self):
+        import copy
+        events = self.activation_events()
+        receipt = copy.deepcopy(events[1])
+        receipt['params']['item']['result']['structuredContent']['skill']['plugin_id'] = 'different'
+        events.insert(-1, receipt)
+        self.assertEqual(runner.assess_observation(self.observation(), {'mechanical': ['activation_before_delegation']}, events)['status'], 'failed')
+
+    def test_started_tool_event_does_not_invalidate_activation(self):
+        import copy
+        events = self.activation_events()
+        started = copy.deepcopy(events[-2])
+        started['method'] = 'item/started'
+        started['params']['item'].pop('result')
+        started['params']['item']['status'] = 'inProgress'
+        events.insert(-1, started)
+        self.assertEqual(runner.assess_observation(self.observation(), {'mechanical': ['activation_before_delegation']}, events)['status'], 'passed')
+
+    def test_invalidation_between_delegations_fails(self):
+        import copy
+        events = self.activation_events()
+        blocked = copy.deepcopy(events[-2])
+        blocked['params']['item']['result']['structuredContent']['status'] = 'blocked'
+        events.extend([blocked, copy.deepcopy(events[-1])])
+        self.assertEqual(runner.assess_observation(self.observation(), {'mechanical': ['activation_before_delegation']}, events)['status'], 'failed')
+
+    def test_fresh_complete_activation_after_blocked_is_accepted(self):
+        import copy
+        events = self.activation_events()
+        blocked = copy.deepcopy(events[-2])
+        blocked['params']['item']['result']['structuredContent']['status'] = 'blocked'
+        events = events[:-1] + [blocked] + self.activation_events()
+        self.assertEqual(runner.assess_observation(self.observation(), {'mechanical': ['activation_before_delegation']}, events)['status'], 'passed')
+
+    def test_other_cwd_or_thread_does_not_invalidate_activation(self):
+        import copy
+        for context in ['cwd', 'thread']:
+            with self.subTest(context=context):
+                events = self.activation_events()
+                blocked = copy.deepcopy(events[-2])
+                blocked['params']['item']['result']['structuredContent']['status'] = 'blocked'
+                if context == 'cwd': blocked['params']['item']['arguments']['cwd'] = str(ROOT.parent)
+                else: blocked['params']['threadId'] = 'other'
+                events.insert(-1, blocked)
+                self.assertEqual(runner.assess_observation(self.observation(), {'mechanical': ['activation_before_delegation']}, events)['status'], 'passed')
+
     def test_early_delegation_cannot_be_fixed_by_later_activation(self):
         events = self.activation_events()
         events.insert(0, events.pop())
