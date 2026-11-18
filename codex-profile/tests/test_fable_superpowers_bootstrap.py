@@ -141,6 +141,68 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(result['status'],'rolled_back');self.assertFalse(path.exists())
         self.assertFalse(any(row['name']=='superpowers' for row in self.backend.rows))
 
+    def test_request_deletion_race_preserves_concurrent_edit(self):
+        setup=self.setup();path=setup.state/'automation-request.json';write=bootstrap.write_json;unlink=Path.unlink;rename=bootstrap.os.rename
+        def fail_complete(target,value):
+            if Path(target)==setup.journal and value.get('phase')=='complete':raise OSError('failed')
+            write(target,value)
+        def racing_unlink(target,*args,**kwargs):
+            if target==path:path.write_bytes(b'concurrent edit')
+            return unlink(target,*args,**kwargs)
+        def racing_rename(src,dst):
+            if Path(src)==path:path.write_bytes(b'concurrent edit')
+            return rename(src,dst)
+        with patch('bootstrap.write_json',side_effect=fail_complete), patch.object(Path,'unlink',racing_unlink), patch('bootstrap.os.rename',side_effect=racing_rename):
+            with self.assertRaisesRegex(Exception,'rollback requires attention'):setup.install()
+        self.assertEqual(path.read_bytes(),b'concurrent edit')
+
+    def test_request_restoration_race_preserves_concurrent_edit(self):
+        setup=self.setup();path=setup.state/'automation-request.json';path.parent.mkdir(parents=True);path.write_bytes(b'previous')
+        write=bootstrap.write_json;replace=bootstrap.os.replace;rename=bootstrap.os.rename;recovering=[]
+        def fail_complete(target,value):
+            if Path(target)==setup.journal and value.get('phase')=='complete':
+                recovering.append(True);raise OSError('failed')
+            write(target,value)
+        def racing_replace(src,dst):
+            if recovering and Path(dst)==path:path.write_bytes(b'concurrent edit')
+            return replace(src,dst)
+        def racing_rename(src,dst):
+            if recovering and Path(src)==path:path.write_bytes(b'concurrent edit')
+            return rename(src,dst)
+        with patch('bootstrap.write_json',side_effect=fail_complete), patch('bootstrap.os.replace',side_effect=racing_replace), patch('bootstrap.os.rename',side_effect=racing_rename):
+            with self.assertRaisesRegex(Exception,'rollback requires attention'):setup.install()
+        self.assertEqual(path.read_bytes(),b'concurrent edit')
+
+    def test_request_withdrawal_interruption_resumes_from_backup(self):
+        setup=self.setup();path=setup.state/'automation-request.json';path.parent.mkdir(parents=True);path.write_bytes(b'previous')
+        write=bootstrap.write_json;rename=bootstrap.os.rename
+        def fail_complete(target,value):
+            if Path(target)==setup.journal and value.get('phase')=='complete':raise OSError('failed')
+            write(target,value)
+        def interrupt(src,dst):
+            rename(src,dst)
+            if Path(src)==path:raise KeyboardInterrupt()
+        with patch('bootstrap.write_json',side_effect=fail_complete), patch('bootstrap.os.rename',side_effect=interrupt):
+            with self.assertRaises(KeyboardInterrupt):setup.install()
+        self.assertFalse(path.exists())
+        self.assertEqual(self.setup().install()['status'],'recovered')
+        self.assertEqual(path.read_bytes(),b'previous')
+
+    def test_request_appearing_after_withdrawal_is_preserved(self):
+        setup=self.setup();path=setup.state/'automation-request.json';path.parent.mkdir(parents=True);path.write_bytes(b'previous')
+        write=bootstrap.write_json;create=bootstrap.create_owned;recovering=[]
+        def fail_complete(target,value):
+            if Path(target)==setup.journal and value.get('phase')=='complete':recovering.append(True);raise OSError('failed')
+            write(target,value)
+        def race(target,data):
+            if recovering and Path(target)==path:path.write_bytes(b'concurrent creation')
+            create(target,data)
+        with patch('bootstrap.write_json',side_effect=fail_complete), patch('bootstrap.create_owned',side_effect=race):
+            with self.assertRaisesRegex(Exception,'rollback requires attention'):setup.install()
+        self.assertEqual(path.read_bytes(),b'concurrent creation')
+        journal=json.loads(setup.journal.read_text());backup=setup.state/journal['automation_request']['recovery_backup']
+        self.assertTrue(backup.is_file())
+
     def test_interrupted_unconfirmed_request_is_preserved_for_recovery(self):
         setup=self.setup();path=setup.state/'automation-request.json';publish=bootstrap.create_owned
         def interrupt(target,data):

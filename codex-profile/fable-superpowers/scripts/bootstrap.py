@@ -312,7 +312,11 @@ class Setup:
             current_request=path.read_bytes() if path.exists() else None
             old_request=bytes.fromhex(request['old_hex']) if request['old_hex'] is not None else None
             new_request=bytes.fromhex(request['new_hex'])
-            if current_request!=old_request and (current_request!=new_request or not request.get('published')):
+            backup_name=request.get('recovery_backup')
+            if backup_name and not re.fullmatch(r'automation-recovery-[0-9a-f]{32}\.json',backup_name):
+                raise Conflict('Invalid automation recovery backup; it is preserved.')
+            backup=self.state/backup_name if backup_name else None
+            if not (backup and (backup.exists() or backup.is_symlink())) and current_request!=old_request and (current_request!=new_request or not request.get('published')):
                 raise Conflict('Automation request changed or publication is unconfirmed; recovery preserves it.')
         rows=[x for x in self.backend.installed() if x.get('pluginId')==PLUGIN]
         if rows:
@@ -342,11 +346,23 @@ class Setup:
             old_setting=value['old_plugin_setting'];current_plugins=settings(self.home).get('plugins',{})
             if old_setting['present']!=(PLUGIN in current_plugins) or (old_setting['present'] and old_setting['value']!=current_plugins[PLUGIN]):
                 raise Conflict('Superpowers setting was not restored; it is preserved for recovery.')
-        if request and current_request!=old_request:
-            if old_request is None:
-                if path.read_bytes()!=current_request:raise Conflict('Automation request changed during recovery.')
-                path.unlink()
-            else:atomic_write(path,old_request,expected=current_request)
+        if request and (current_request!=old_request or (backup and (backup.exists() or backup.is_symlink()))):
+            if not backup:
+                backup=self.state/('automation-recovery-'+uuid.uuid4().hex+'.json')
+                request['recovery_backup']=backup.name
+                write_json(self.journal,value)
+            if not backup.exists() and not backup.is_symlink():
+                os.rename(path,backup)
+            if backup.is_symlink() or not backup.is_file():
+                raise Conflict('Automation recovery backup is not a regular file; it is preserved.')
+            captured=backup.read_bytes()
+            if captured!=new_request:
+                if not path.exists() and not path.is_symlink():create_owned(path,captured)
+                raise Conflict('Automation request changed during withdrawal; both versions are preserved.')
+            current_request=path.read_bytes() if path.exists() and not path.is_symlink() else None
+            if path.is_symlink() or (path.exists() and current_request!=old_request):
+                raise Conflict('Automation request appeared during recovery; both versions are preserved.')
+            if old_request is not None and not path.exists():create_owned(path,old_request)
         old=bytes.fromhex(value['old_marketplace_hex'])
         if current!=old:atomic_write(self.marketplace,old,expected=current)
         write_json(self.state/'marketplace-owned.json',{'schema':1,'manifest_hex':old.hex(),'source_root':str(self.catalog)})
