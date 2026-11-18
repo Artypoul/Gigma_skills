@@ -92,6 +92,15 @@
 **Interfaces:** сохранить CLI `--dest`, `--plugin`, `--adopt` и формат управляемого списка. Изменить только распознавание неуправляемой копии и связанное сообщение о конфликте. Копия без ownership принимается автоматически лишь при одинаковом наборе допустимых файлов и побайтовом равенстве содержимого; generated `__pycache__` не участвует, как и сейчас.
 
 - [ ] Добавить `test_unmanaged_same_name_changed_content_is_preserved`: временный `--dest`, один личный `vps-connect/SKILL.md`, managed-списка нет. После запуска байты исходного файла равны исходным, имя не присвоено синхронизатором, конфликт указан в выводе; exit code `3` по существующему контракту конфликтов.
+
+```python
+# Assertions после subprocess.run в описанном temporary fixture.
+self.assertEqual(completed.returncode, 3)
+self.assertEqual(personal_skill.read_bytes(), original_bytes)
+self.assertNotIn("vps-connect", managed_names_after)
+self.assertIn("vps-connect", completed.stdout + completed.stderr)
+```
+
 - [ ] Добавить положительные случаи: идентичная неуправляемая копия принимается; ранее управляемая копия обновляется; явно указанный `--adopt` разрешает замену. Добавить личный дополнительный файл: он остаётся на месте без adoption. При `--plugin X --prune` managed-скиллы остальных канонических плагинов сохраняются.
 - [ ] Запустить `python -B -m unittest discover -s tests -p 'test_sync_claude.py' -v`; основной отрицательный сценарий должен выявлять потерю исходных байтов на baseline.
 - [ ] Заменить эвристику `looks_like_our_copy` доказательством равенства содержимого либо явного владения. Не менять unrelated reference sync и pruning.
@@ -109,6 +118,20 @@
 - [ ] Добавить тесты `configured catalogue applies disabled skill path`, `configured catalogue applies disabled skill name` и `configured catalogue uses the last matching skill rule` для repo/user/plugin discovery и повторного обнаружения нормализованного пути. Сверить поддерживаемые селекторы и порядок с официальным контрактом текущего host и native fixture; неизвестную форму не интерпретировать как разрешение.
 - [ ] Зафиксировать assertions: отключённая запись отсутствует среди доступных включённых скиллов; старый ID не позволяет читать отключённый файл после повторного discovery; позднее явное разрешение восстанавливает доступ, сохраняя `plugin_id` и нормализованный путь.
 - [ ] Добавить интеграционный случай: enabled Fable/Superpowers, реальные три обязательных `SKILL.md`, индивидуально disabled `using-superpowers`; диагностика должна отклонить готовность, а не вернуть `ready`.
+
+```javascript
+// catalog получен после применения конфигурации fixture; disabledPath — realpath.
+assert.equal(catalog.skills.some((skill) => skill.path === disabledPath), false);
+await assert.rejects(
+  readRegisteredSkill(catalog, oldId, 0, 32000),
+  { code: "SKILL_NOT_FOUND" },
+);
+await assert.rejects(
+  diagnosePipeline(catalog, project, { readSkill }),
+  { code: "PIPELINE_NOT_READY" },
+);
+```
+
 - [ ] Из каталога `mcp/` запустить `node --test test/catalog.test.mjs test/pipeline-status.test.mjs`; убедиться, что новые негативные случаи падают по ожидаемой причине.
 - [ ] Реализовать итоговое состояние по правилам конфигурации; сравнивать канонические пути, не выбирать кэш как замену явно отключённому источнику. Не добавлять новый TOML-парсер или зависимость без необходимости.
 - [ ] Повторить targeted tests и `npm test`; проверить, что неоднозначный/неполный каталог по-прежнему не становится готовым.
@@ -125,6 +148,16 @@
 - [ ] Добавить `health MCP uses the custom CODEX_HOME`: временные профиль/проект и реальный дочерний bundled MCP; уникальный скилл есть только в выбранном профиле. Проверять границу процесса, не только прямой вызов `fetchConfiguredCatalog`.
 - [ ] Добавить `health rejects a matching identity from another installation`: в другом профиле лежит одноимённая копия, но `skill.path`/digest не соответствуют `installed.path` и `files`; ожидание — `HEALTH_FAILED`.
 - [ ] Добавить позитивный вариант с корректными profile/path/digest и вариант без `CODEX_HOME`. В тестах восстанавливать environment и закрывать транспорт даже при исключении.
+
+```javascript
+// Оба backend используют настоящий MCP transport; native discovery контролируется fixture.
+await assert.doesNotReject(backend.health(installed, project, files));
+await assert.rejects(
+  foreignProfileBackend.health(installed, project, files),
+  { code: "HEALTH_FAILED" },
+);
+```
+
 - [ ] Из `mcp/` выполнить `npm run build`, затем `node --test test/update-native.test.mjs`; на baseline профильный негативный сценарий должен обнаруживать неверный каталог.
 - [ ] Исправить передачу профиля; сверять MCP discovery/read с конкретным установленным `SKILL.md`, фактическим digest кандидата и выбранной identity. Не менять native source/marketplace и авторизацию.
 - [ ] Повторить build и targeted tests; затем `npm test`. Убедиться, что одинаковое имя/identity в постороннем каталоге не даёт успешного health.
@@ -142,6 +175,25 @@
 
 - [ ] Добавить табличные status-тесты: только `@fable5` → ready; только `@gigma-skills` → ready; обе включены → not ready; неизвестный `@other` → not ready; правильное имя с чужим path/digest → not ready; disabled copy не заменяет активный источник.
 - [ ] Для обоих позитивных случаев требовать полный matching search/read/status и неизменные identity/path/digest. Проверить, что отсутствие либо отключение обязательного Superpowers по-прежнему блокирует ready.
+
+```javascript
+// Используются существующие makeCatalog/readSkill из pipeline-status.test.mjs.
+for (const pluginId of ["fable5-codex@fable5", "fable5-codex@gigma-skills"]) {
+  const catalog = makeCatalog();
+  catalog.skills[0].plugin_id = pluginId;
+  const result = await diagnosePipeline(catalog, "C:/project", { readSkill });
+  assert.equal(result.status, "ready");
+  assert.equal(result.skills.fable.plugin_id, pluginId);
+}
+const duplicate = makeCatalog();
+duplicate.skills.push({ ...duplicate.skills[0], id: "second-fable",
+  plugin_id: "fable5-codex@fable5" });
+await assert.rejects(
+  diagnosePipeline(duplicate, "C:/project", { readSkill }),
+  { code: "PIPELINE_NOT_READY" },
+);
+```
+
 - [ ] Запустить `node --test test/pipeline-status.test.mjs` из `mcp/`; случай с документированным `@fable5` должен обнаруживать исходную несовместимость.
 - [ ] Согласованно изменить диагностику и все перечисленные native-инструкции. Чтение через GitHub не должно становиться доказательством enabled-identity; условия `chatgpt_github` оставить прежними.
 - [ ] Прогнать `rg -n 'fable5-codex@(gigma-skills|fable5)' README.md PLUGIN.md MCP.md SAFE_UPDATE.md .agents/skills/fable5-codex mcp/src/pipeline-status.mjs` и вручную проверить, что каждый жёсткий идентификатор имеет корректную область действия.
@@ -157,6 +209,23 @@
 **Interfaces:** сохранить `assess_observation(...)` и структуру `criteria.activation_before_delegation`. Использовать существующие `AcceptanceTests.activation_events()` и `observation()`. Оценивать доказательства по порядку событий в той же сессии и `cwd`, а не искать любое прежнее успешное состояние.
 
 - [ ] Добавить `test_blocked_status_invalidates_prior_activation`: вставить завершённый `fable_status(status='blocked')` между valid ready и delegate; assert итог `failed` и критерий не `satisfied`.
+
+```python
+import copy
+
+events = self.activation_events()
+blocked = copy.deepcopy(events[-2])
+blocked["params"]["item"]["result"]["structuredContent"]["status"] = "blocked"
+events.insert(-1, blocked)
+result = runner.assess_observation(
+    self.observation(), {"mechanical": ["activation_before_delegation"]}, events
+)
+self.assertEqual(result["status"], "failed")
+self.assertNotEqual(
+    result["criteria"]["activation_before_delegation"]["status"], "satisfied"
+)
+```
+
 - [ ] Добавить варианты позднего partial/warning/error, смены каталога или выбранной identity, а также двух делегирований с invalidation между ними; ни одно затронутое делегирование не принимается по старой цепочке.
 - [ ] Добавить `test_fresh_complete_activation_after_blocked_is_accepted`: после invalidation есть новая полная согласованная цепочка до delegate; assert `passed`. События другого `cwd`/thread не подтверждают и не отменяют текущую активацию.
 - [ ] Выполнить `python -B -m unittest discover -s codex-profile/tests -p 'test_agent_acceptance_eval.py' -v`; новый blocked-case должен падать на baseline.
@@ -173,6 +242,18 @@
 **Interfaces:** сохранить `Setup.install()`, `automation(factory)` и существующие успешные поля ответа. Выбранный подход — подготовить локальный automation request и возвращаемый payload до последнего перехода `phase='complete'`. Создание реального расписания остаётся отдельной операцией. Не добавлять новый успешный статус, который прежние callers могут неверно интерпретировать.
 
 - [ ] В `SetupTests` добавить `test_automation_request_write_failure_rolls_back_owned_install`: создать каталог на месте `automation-request.json`, вызвать fresh install. Assertions: при `rolled_back` новая owned-установка действительно удалена, исходные настройки восстановлены, Fable и чужие плагины не изменены.
+
+```python
+# Исходные rows и marketplace сохранены до fresh install; Fable уже существует.
+self.assertEqual(result["status"], "rolled_back")
+self.assertEqual(self.backend.rows, before_rows)
+self.assertEqual(setup.marketplace.read_bytes(), before_marketplace)
+self.assertFalse(any(
+    row.get("pluginId") == "superpowers@gigma-skills" and row.get("enabled") is True
+    for row in self.backend.rows
+))
+```
+
 - [ ] Добавить тест исключения factory до записи и тест ошибки финального journal write после подготовки request. Сохранить исходные байты прежнего request либо удалить только доказанно созданный этой транзакцией файл; конкурентно изменённый файл не перезаписывать.
 - [ ] Добавить повторный запуск после ошибки: он не использует оставшееся доказательство успешной установки, если context уже не совпадает; успешная повторная установка по-прежнему возвращает ожидаемые `automation`/`automation_request_path`.
 - [ ] Выполнить `python -B -m unittest discover -s codex-profile/tests -p 'test_fable_superpowers_bootstrap.py' -v`; baseline должен выявлять ложный `rolled_back`.
@@ -188,7 +269,21 @@
 
 **Interfaces:** сохранить `staging_plugin_id(candidate)`, `_project_config(stage_id, active_plugin_ids)` и `prepare_fixtures(...)`. Разрешение временной identity действует только внутри проверяемого fixture, для конкретного кандидата и его fingerprint. В рабочем профиле правило `superpowers@gigma-skills` остаётся обязательным.
 
-- [ ] До изменения инструкций выполнить ограниченный native trial существующего кандидата при доступном авторизованном runtime; записать, какие инструкции прочитаны и где возникает противоречие. Если runtime недоступен, зафиксировать незакрытый live gate и не выдавать прогноз поведения за наблюдение.
+**Предпосылка испытания:** `_helper_probe` требует staged identity ещё до model trial. В проверенном коде [Fable helper читает profile config](https://github.com/Artypoul/claude-fable-5-system-prompt/blob/2cf4d13bea89a895d07f15036c5df9a92f950d71/mcp/src/catalog.mjs#L388-L396), а [compatibility fixture записывает переключение плагинов в project config](https://github.com/Artypoul/Gigma_skills/blob/4db7fda7da1ba36c118c74ec983dcb42e2b7f2a0/codex-profile/fable-superpowers/scripts/updater/compatibility.py#L263-L276). Их согласованность нельзя считать выполненной по наличию файлов. Это отдельная предпосылка, не новое наблюдение об отказе модели.
+
+- [ ] До model trial сопоставить native discovery и настоящий helper в точном fixture `cwd`: выбранные staged identity/path/digest должны совпадать с кандидатом, а outside catalogue оставаться неизменным. Записать результаты обоих источников.
+
+```python
+# Значения извлечены из настоящих native/helper receipts в одном fixture;
+# expected_* получены из проверенного candidate, outside_* — из outside probe.
+assert helper_identity == native_identity == staging_plugin_id(candidate)
+assert helper_path == native_path == expected_candidate_path
+assert helper_digest == expected_candidate_digest
+assert outside_after == outside_before
+```
+
+- [ ] Если helper не видит project-scoped candidate, остановить только зависящее от него испытание. Сохранить воспроизводимый пример и отдельно описать ограниченное исправление discovery/config-layer contract с тестами до его реализации. Не обходить проверку глобальным включением staged-плагина, wildcard identity или заменой реального helper на fake; такой preflight block не является доказательством R1.
+- [ ] После успешной проверки discovery и до изменения инструкций выполнить ограниченный native trial существующего кандидата при доступном авторизованном runtime; записать, какие инструкции прочитаны и где возникает противоречие. Если runtime недоступен, зафиксировать незакрытый live gate и не выдавать прогноз поведения за наблюдение.
 - [ ] Добавить `test_fixture_policy_authorizes_only_the_exact_staged_candidate`: generated instruction содержит точную временную identity, путь и digest кандидата; другой staged hash или чужой source не разрешён.
 - [ ] Добавить негативные проверки отсутствующего/изменённого разрешения и изменения candidate после подготовки. Сохранить отключение пользовательских копий только в изолированном тестовом контексте.
 - [ ] Запустить `python -B -m unittest -v test_compatibility` из `codex-profile/fable-superpowers/scripts/updater/` и policy suite из корня; подтвердить исходное противоречие проверкой сгенерированных инструкций.
