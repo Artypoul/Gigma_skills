@@ -10,7 +10,7 @@
       "source": {
         "source": "url",
         "url": "https://github.com/Artypoul/claude-fable-5-system-prompt.git",
-        "sha": "d3bf4ca2cb0b6dace029c5af90d16f8434dc456c"
+        "sha": "2cf4d13bea89a895d07f15036c5df9a92f950d71"
       },
       "skills": [
         "fable5-codex"
