@@ -553,6 +553,15 @@ def activation_order(native, events):
 
     active = False
     selected = {}
+    catalog = None
+
+    def conflicting_skill(left, right):
+        if not isinstance(left, dict) or not isinstance(right, dict):
+            return False
+        if not any(left.get(k) and left.get(k) == right.get(k) for k in ('id', 'name')):
+            return False
+        return any(left.get(k) is not None and right.get(k) is not None and left[k] != right[k]
+                   for k in ('id', 'name', 'path', 'plugin_id', 'sha256'))
     for line, item in items:
         if line in starts:
             if not active:
@@ -574,32 +583,60 @@ def activation_order(native, events):
         tool = item.get('tool', '').replace('-', '_')
         value = payload(item)
         if item.get('status') not in {'completed', 'success'} or value.get('partial') is not False or value.get('warning_count') != 0:
-            searches, reads, active, selected = [], [], False, {}
+            searches, reads, active, selected, catalog = [], [], False, {}, None
             continue
         if tool == 'fable_status':
             candidate = value.get('skills', {})
             if value.get('status') != 'ready' or not same_cwd(value.get('cwd')):
-                searches, reads, active, selected = [], [], False, {}
+                searches, reads, active, selected, catalog = [], [], False, {}, None
             elif active and candidate != selected:
-                searches, reads, active, selected = [], [], False, {}
+                searches, reads, active, selected, catalog = [], [], False, {}, None
             else:
                 active = complete_activation(line, value)
                 selected = candidate if active else {}
                 if not active:
-                    searches, reads = [], []
+                    searches, reads, catalog = [], [], None
         else:
-            # A new discovery starts a new activation; old reads cannot establish it.
-            if active and tool == 'search_skills':
-                searches, reads, active, selected = [], [], False, {}
-            if active and tool == 'read_skill':
-                skill = value.get('skill', {})
-                if (not isinstance(skill, dict) or not any(
-                        all(skill.get(k) == chosen.get(k) for k in ('id', 'name', 'path', 'plugin_id'))
-                        and value.get('sha256') == chosen.get('sha256') for chosen in selected.values())):
-                    searches, reads, active, selected = [], [], False, {}
+            known = list(selected.values())
+            known.extend(skill for _, receipt in searches for skill in receipt.get('skills', [])
+                         if isinstance(skill, dict))
+            known.extend(receipt.get('skill', {}) for _, receipt in reads)
             if tool == 'search_skills':
+                found = value.get('skills', [])
+                new_catalog = value.get('catalog_sha256')
+                if (not isinstance(found, list) or not isinstance(new_catalog, str)
+                        or not re.fullmatch(r'[a-f0-9]{64}', new_catalog)):
+                    searches, reads, active, selected, catalog = [], [], False, {}, None
+                    continue
+                if ((catalog is not None and new_catalog != catalog)
+                        or any(conflicting_skill(skill, previous) for skill in found for previous in known)):
+                    searches, reads, active, selected = [], [], False, {}
+                catalog = new_catalog
                 searches.append((line, value))
             else:
+                skill = value.get('skill', {})
+                observed = {**skill, 'sha256': value.get('sha256')} if isinstance(skill, dict) else {}
+                offset, content = value.get('offset'), value.get('content')
+                conflict = any(conflicting_skill(observed, previous) for previous in known)
+                for _, previous in reads:
+                    prior_skill = previous.get('skill', {})
+                    if (not isinstance(prior_skill, dict) or not isinstance(skill, dict)
+                            or not all(skill.get(k) == prior_skill.get(k) for k in ('id', 'name', 'path', 'plugin_id'))):
+                        continue
+                    prior_offset, prior_content = previous.get('offset'), previous.get('content')
+                    if (not isinstance(offset, int) or not isinstance(prior_offset, int)
+                            or not isinstance(content, str) or not isinstance(prior_content, str)):
+                        conflict = True
+                        break
+                    start = max(offset, prior_offset)
+                    end = min(offset + len(content), prior_offset + len(prior_content))
+                    if (value.get('total_chars') != previous.get('total_chars')
+                            or (start < end and content[start - offset:end - offset]
+                                != prior_content[start - prior_offset:end - prior_offset])):
+                        conflict = True
+                        break
+                if conflict:
+                    searches, reads, active, selected, catalog = [], [], False, {}, None
                 reads.append((line, value))
     return verdict('satisfied', 'Complete matching activation receipts precede every delegation')
 

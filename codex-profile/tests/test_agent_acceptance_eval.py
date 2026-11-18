@@ -199,6 +199,58 @@ class AcceptanceTests(unittest.TestCase):
         events.insert(-1, receipt)
         self.assertEqual(runner.assess_observation(self.observation(), {'mechanical': ['activation_before_delegation']}, events)['status'], 'failed')
 
+    def test_changed_content_with_same_digest_invalidates_activation(self):
+        import copy
+        events = self.activation_events()
+        read = copy.deepcopy(events[1])
+        value = read['params']['item']['result']['structuredContent']
+        value['content'] = 'X' + value['content'][1:]
+        events.insert(-1, read)
+        self.assertEqual(runner.assess_observation(self.observation(), {'mechanical': ['activation_before_delegation']}, events)['status'], 'failed')
+
+    def test_compatible_discovery_after_ready_preserves_activation(self):
+        import copy
+        events = self.activation_events()
+        events.insert(-1, copy.deepcopy(events[0]))
+        self.assertEqual(runner.assess_observation(self.observation(), {'mechanical': ['activation_before_delegation']}, events)['status'], 'passed')
+
+    def test_unrelated_skill_read_after_ready_preserves_activation(self):
+        import copy
+        events = self.activation_events()
+        read = copy.deepcopy(events[1])
+        value = read['params']['item']['result']['structuredContent']
+        content = 'unrelated complete skill'
+        digest = hashlib.sha256(content.encode()).hexdigest()
+        value.update(skill={'id': 'subagent-driven-development', 'name': 'subagent-driven-development',
+                            'path': '/skills/subagent-driven-development', 'plugin_id': 'fixture', 'sha256': digest},
+                     sha256=digest, content=content, total_chars=len(content))
+        events.insert(-1, read)
+        self.assertEqual(runner.assess_observation(self.observation(), {'mechanical': ['activation_before_delegation']}, events)['status'], 'passed')
+
+    def test_catalog_change_during_collection_invalidates_old_chain(self):
+        import copy
+        events = self.activation_events()
+        changed = copy.deepcopy(events[0])
+        changed['params']['item']['result']['structuredContent']['catalog_sha256'] = 'b' * 64
+        events.insert(-2, changed)
+        self.assertEqual(runner.assess_observation(self.observation(), {'mechanical': ['activation_before_delegation']}, events)['status'], 'failed')
+
+    def test_complete_fresh_chain_after_catalog_change_is_accepted(self):
+        import copy
+        events = self.activation_events()
+        changed = copy.deepcopy(events[0])
+        changed['params']['item']['result']['structuredContent']['catalog_sha256'] = 'b' * 64
+        events = events[:-2] + [changed] + self.activation_events()
+        self.assertEqual(runner.assess_observation(self.observation(), {'mechanical': ['activation_before_delegation']}, events)['status'], 'passed')
+
+    def test_conflicting_discovery_during_collection_invalidates_old_chain(self):
+        import copy
+        events = self.activation_events()
+        changed = copy.deepcopy(events[0])
+        changed['params']['item']['result']['structuredContent']['skills'][0]['plugin_id'] = 'different'
+        events.insert(-2, changed)
+        self.assertEqual(runner.assess_observation(self.observation(), {'mechanical': ['activation_before_delegation']}, events)['status'], 'failed')
+
     def test_started_tool_event_does_not_invalidate_activation(self):
         import copy
         events = self.activation_events()
