@@ -66,15 +66,14 @@ in_canon()       { for c in ${canon_all+"${canon_all[@]}"}; do [ "$c" = "$1" ] &
 
 file_list() { (cd "$1" && find . -type f -not -path '*/__pycache__/*' | sort); }
 
-# Копия прежней синхронизации, а не чужой скил. Совпадения содержимого мало:
-# канон с тех пор мог измениться, и обновление упёрлось бы в отказ на ровном
-# месте. Признак — тот же набор файлов и то же имя скила во frontmatter:
-# личный скил с другим содержимым такую структуру не повторяет.
+# Неуправляемую копию можно принять только при полном совпадении файлов.
 looks_like_our_copy() {
-  local canon="$1" target="$2" name="$3"
+  local canon="$1" target="$2" rel
   [ -f "$target/SKILL.md" ] || return 1
   [ "$(file_list "$canon")" = "$(file_list "$target")" ] || return 1
-  grep -Eq "^name:[[:space:]]*${name}[[:space:]]*$" "$target/SKILL.md"
+  while IFS= read -r rel; do
+    cmp -s "$canon/$rel" "$target/$rel" || return 1
+  done < <(file_list "$canon")
 }
 
 synced=()
@@ -92,7 +91,7 @@ for name in "${plugins[@]}"; do
       target="$dest/skills/$skill_name"
 
       if [ -e "$target" ] && ! is_managed "$skill_name" && ! is_adopted "$skill_name" \
-         && ! looks_like_our_copy "$skill" "$target" "$skill_name"; then
+         && ! looks_like_our_copy "$skill" "$target"; then
         conflicts+=("$skill_name")
         continue
       fi
@@ -128,7 +127,7 @@ for name in "${plugins[@]}"; do
 done
 
 if [ ${#conflicts[@]} -gt 0 ] || [ ${#ref_conflicts[@]} -gt 0 ]; then
-  echo "ОТКАЗ: в $dest уже есть чужие файлы, которые этот скрипт не создавал:" >&2
+  echo "ОТКАЗ: в $dest уже есть файлы, принадлежность которых не подтверждена:" >&2
   for c in ${conflicts+"${conflicts[@]}"};         do echo "  - skills/$c" >&2; done
   for c in ${ref_conflicts+"${ref_conflicts[@]}"}; do echo "  - reference/$c" >&2; done
   echo "Перезаписать осознанно: --adopt ИМЯ (повторять для каждого). Остальное синхронизировано." >&2
