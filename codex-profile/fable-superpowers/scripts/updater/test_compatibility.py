@@ -549,6 +549,220 @@ class CompatibilityUnitTests(unittest.TestCase):
         self.assertEqual(c._inventory_map([{'Path':'skills\\x\\SKILL.md','SHA256':'A'*64}]),{'skills/x/SKILL.md':'a'*64})
         with self.assertRaises(ValueError):c._inventory_map([{'path':'../escape','sha256':'a'*64}])
 
+class HelperPackageHealthTests(unittest.TestCase):
+    def fixture(self, root):
+        home=root/'home';home.mkdir();(home/'AGENTS.md').write_text('policy')
+        cache=home/'plugins/cache/fable-superpowers/superpowers/7.0.2';cache.mkdir(parents=True)
+        (cache/'.codex-plugin').mkdir();(cache/'.codex-plugin/plugin.json').write_text(json.dumps({'name':'superpowers','version':'7.0.2','skills':'./skills'}))
+        native=[];expected={};skills=[]
+        for name in sorted(c.CRITICAL):
+            skill=cache/'skills'/name/'SKILL.md';skill.parent.mkdir(parents=True);skill.write_text(skill_text(name))
+            expected[name]={'path':str(skill),'sha256':c.digest(skill)}
+            native.append({'pluginId':c.PLUGIN_ID,'name':'superpowers:'+name,'path':str(skill)})
+            skills.append({'id':name,'name':name,'plugin_id':c.PLUGIN_ID,'path':str(skill)})
+        froot=root/'fable';fpath=froot/'.agents/skills/fable5-codex/SKILL.md';fpath.parent.mkdir(parents=True);fpath.write_text(skill_text('fable5-codex'))
+        (froot/'.mcp.json').write_text(json.dumps({'mcpServers':{'fable5_skills':{'command':'node','args':[]}}}))
+        native.append({'pluginId':'fable5-codex@fable5','name':'fable5-codex','path':str(fpath)})
+        inventory={p.relative_to(cache).as_posix():c.digest(p) for p in cache.rglob('*') if p.is_file()}
+        return home, {'skills':native}, expected, skills, fpath, inventory
+
+    def fake_client(self, skills, expected, mode='candidate', search_change=None, read_change=None):
+        meta=({'catalog_source':'configured_cache','native_context_verified':False,'partial':True,'warning_count':1,
+               'source_warning_count':0,'warnings':['NATIVE_CONTEXT_UNVERIFIED']} if mode=='candidate' else {'partial':False,'warning_count':0})
+        items=copy.deepcopy(skills)
+        if mode=='candidate':
+            for item in items:item['enabled_in_native_context']=None
+        search={**copy.deepcopy(meta),'skills':items,'total':len(items),'next_offset':None,'catalog_sha256':'a'*64}
+        if search_change:search_change(search)
+        selected=next(item for item in items if item['name']=='executing-plans')
+        content=Path(expected['executing-plans']['path']).read_bytes().decode('utf-8')
+        class Client:
+            def __init__(self,*args):pass
+            def send(self,*args):pass
+            def close(self):pass
+            def rpc(self,method,params):
+                if method=='initialize':return {}
+                if method=='tools/list':return {'tools':[{'name':'search_skills'},{'name':'read_skill'}]}
+                if params['name']=='search_skills':return {'structuredContent':copy.deepcopy(search)}
+                offset=params['arguments']['offset']; chunk=content[offset:offset+8]
+                page={**copy.deepcopy(meta),'skill':copy.deepcopy(selected),'sha256':expected['executing-plans']['sha256'],
+                      'offset':offset,'content':chunk,'total_chars':len(content),'next_offset':offset+len(chunk) if offset+len(chunk)<len(content) else None}
+                if read_change:read_change(page,offset)
+                return {'structuredContent':page}
+        return Client
+
+    def test_installed_health_accepts_candidate_context_warning_and_legacy_rollback(self):
+        for mode in ('candidate','legacy'):
+            with self.subTest(mode=mode),tempfile.TemporaryDirectory() as td:
+                root=Path(td);home,catalog,expected,skills,fpath,inventory=self.fixture(root)
+                with patch.object(c,'_native_catalog',return_value=catalog),patch.object(c,'McpClient',self.fake_client(skills,expected,mode)):
+                    result=c.installed_health(root/'probe','7.0.2',inventory,home)
+                self.assertTrue(result['passed'],result['errors'])
+                receipt=result['fable_helper'];self.assertEqual(receipt['scope'],'package_health')
+                self.assertEqual(receipt['partial'],mode=='candidate')
+                self.assertEqual(receipt['catalog_source'],'configured_cache' if mode=='candidate' else None)
+                self.assertEqual(receipt['native_context_verified'],False if mode=='candidate' else None)
+
+    def test_crlf_fixture_preserves_bytes_used_by_native_digest(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);home,catalog,expected,skills,fpath,inventory=self.fixture(root)
+            file=Path(expected['executing-plans']['path'])
+            file.write_bytes(file.read_bytes().replace(b'\r\n', b'\n').replace(b'\n', b'\r\n'))
+            expected['executing-plans']['sha256']=c.digest(file)
+            inventory['skills/executing-plans/SKILL.md']=c.digest(file)
+            with patch.object(c,'_native_catalog',return_value=catalog),patch.object(c,'McpClient',self.fake_client(skills,expected)):
+                result=c.installed_health(root/'probe','7.0.2',inventory,home)
+            self.assertTrue(result['passed'],result['errors'])
+
+    def test_read_with_utf8_bom_matches_verified_native_bytes(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);home,catalog,expected,skills,fpath,inventory=self.fixture(root)
+            file=Path(expected['executing-plans']['path'])
+            file.write_bytes(b'\xef\xbb\xbf'+file.read_bytes())
+            expected['executing-plans']['sha256']=c.digest(file)
+            inventory['skills/executing-plans/SKILL.md']=c.digest(file)
+            base=self.fake_client(skills,expected)
+            class BomClient(base):
+                def rpc(self,method,params):
+                    result=super().rpc(method,params)
+                    if method=='tools/call' and params['name']=='read_skill':
+                        data=result['structuredContent']; text=file.read_bytes().decode('utf-8-sig'); offset=params['arguments']['offset']; chunk=text[offset:offset+8]
+                        data.update(content=chunk,total_chars=len(text),next_offset=offset+len(chunk) if offset+len(chunk)<len(text) else None)
+                    return result
+            with patch.object(c,'_native_catalog',return_value=catalog),patch.object(c,'McpClient',BomClient):
+                result=c.installed_health(root/'probe','7.0.2',inventory,home)
+            self.assertTrue(result['passed'],result['errors'])
+
+    def test_package_health_browses_all_pages_for_short_skill_names(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);home,catalog,expected,skills,fpath,inventory=self.fixture(root)
+            base=self.fake_client(skills,expected)
+            class PagedClient(base):
+                def rpc(self,method,params):
+                    result=super().rpc(method,params)
+                    if method=='tools/call' and params['name']=='search_skills':
+                        query=params['arguments']['query']; offset=params['arguments'].get('offset',0)
+                        data=result['structuredContent']; data['catalog_sha256']='a'*64
+                        if query:
+                            data['skills']=[x for x in data['skills'] if query in x['name']]
+                            data['total']=len(data['skills']); data['next_offset']=None
+                        elif offset==0:
+                            data['skills']=[{'name':'other','plugin_id':'other@other'} for _ in range(46)]+data['skills'][:4]; data['next_offset']=50; data['total']=55
+                        else:
+                            data['skills']=data['skills'][4:]; data['next_offset']=None; data['total']=55
+                    return result
+            with patch.object(c,'_native_catalog',return_value=catalog),patch.object(c,'McpClient',PagedClient):
+                result=c.installed_health(root/'probe','7.0.2',inventory,home)
+            self.assertTrue(result['passed'],result['errors'])
+
+    def test_package_health_rejects_changed_or_incomplete_search_pages(self):
+        for change in ('digest','source','total','missing','cycle'):
+            with self.subTest(change=change),tempfile.TemporaryDirectory() as td:
+                root=Path(td);home,catalog,expected,skills,fpath,inventory=self.fixture(root)
+                base=self.fake_client(skills,expected)
+                class PagedClient(base):
+                    def rpc(self,method,params):
+                        result=super().rpc(method,params)
+                        if method=='tools/call' and params['name']=='search_skills':
+                            data=result['structuredContent'];offset=params['arguments'].get('offset',0)
+                            data['total']=55
+                            if offset==0:
+                                data['skills']=[{'name':'other','plugin_id':'other@other'} for _ in range(46)]+data['skills'][:4];data['next_offset']=50
+                            else:
+                                data['skills']=data['skills'][4:];data['next_offset']=None
+                                if change=='digest':data['catalog_sha256']='b'*64
+                                if change=='source':data['native_context_verified']=True
+                                if change=='total':data['total']=56
+                                if change=='missing':data['skills'].pop()
+                                if change=='cycle':data['next_offset']=50
+                        return result
+                with patch.object(c,'_native_catalog',return_value=catalog),patch.object(c,'McpClient',PagedClient):
+                    result=c.installed_health(root/'probe','7.0.2',inventory,home)
+                self.assertFalse(result['passed'],change)
+
+    def test_strict_probe_rejects_candidate_context_warning(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);home,catalog,expected,skills,fpath,inventory=self.fixture(root)
+            with patch.object(c,'McpClient',self.fake_client(skills,expected)):
+                with self.assertRaises(RuntimeError):c._helper_probe(root,{'path':str(fpath)},expected,home)
+
+    def test_package_health_rejects_invalid_search_and_read_evidence(self):
+        changes=[
+          ('search extra warning',lambda p:p.update(warnings=['NATIVE_CONTEXT_UNVERIFIED','OTHER']),None),
+          ('search wrong source',lambda p:p.update(catalog_source='native_subprocess'),None),
+          ('search missing warning',lambda p:p.pop('warnings'),None),
+          ('search skill enabled',lambda p:p['skills'][0].update(enabled_in_native_context=True),None),
+          ('duplicate skill',lambda p:p['skills'].append(copy.deepcopy(p['skills'][0])),None),
+          ('read warning',None,lambda p,o:p.update(source_warning_count=1) if o else None),
+          ('read source',None,lambda p,o:p.update(catalog_source='unknown') if o else None),
+          ('mixed legacy read',None,lambda p,o:([p.pop(k,None) for k in ('catalog_source','native_context_verified','source_warning_count','warnings')],p.update(partial=False,warning_count=0),p['skill'].pop('enabled_in_native_context',None)) if o else None),
+          ('read identity',None,lambda p,o:p['skill'].update(id='wrong') if o else None),
+          ('read path',None,lambda p,o:p['skill'].update(path='/wrong/SKILL.md') if o else None),
+          ('read digest',None,lambda p,o:p.update(sha256='0'*64) if o else None),
+          ('read offset',None,lambda p,o:p.update(offset=0) if o else None),
+          ('read next offset',None,lambda p,o:p.update(next_offset=o) if o else None),
+          ('read total',None,lambda p,o:p.update(total_chars=p['total_chars']+1) if o else None),
+          ('read content',None,lambda p,o:p.update(content='XXXXXXXX') if o else None),
+        ]
+        for label,search_change,read_change in changes:
+            with self.subTest(label=label),tempfile.TemporaryDirectory() as td:
+                root=Path(td);home,catalog,expected,skills,fpath,inventory=self.fixture(root)
+                with patch.object(c,'_native_catalog',return_value=catalog),patch.object(c,'McpClient',self.fake_client(skills,expected,search_change=search_change,read_change=read_change)):
+                    result=c.installed_health(root/'probe','7.0.2',inventory,home)
+                self.assertFalse(result['passed'],label)
+
+    def test_installed_health_over_real_mcp_stdio_transport(self):
+        import sys
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);home,catalog,expected,skills,fpath,inventory=self.fixture(root)
+            froot=fpath.parents[3];script=froot/'server.py'
+            for skill in skills: skill['enabled_in_native_context']=None
+            content=Path(expected['executing-plans']['path']).read_bytes().decode('utf-8')
+            payload={'skills':skills,'content':content,'sha256':expected['executing-plans']['sha256']}
+            script.write_text("""import json, sys
+payload = json.loads(%r)
+meta = {'catalog_source':'configured_cache','native_context_verified':False,'partial':True,'warning_count':1,'source_warning_count':0,'warnings':['NATIVE_CONTEXT_UNVERIFIED']}
+for line in sys.stdin:
+    request=json.loads(line)
+    if 'id' not in request: continue
+    method=request['method']; params=request['params']
+    if method=='initialize': result={}
+    elif method=='tools/list': result={'tools':[{'name':'search_skills'},{'name':'read_skill'}]}
+    elif params['name']=='search_skills': result={'structuredContent':{**meta,'skills':payload['skills'],'total':len(payload['skills']),'next_offset':None,'catalog_sha256':'a'*64}}
+    else:
+        offset=params['arguments']['offset']; text=payload['content']; chunk=text[offset:offset+8]
+        skill=next(x for x in payload['skills'] if x['name']=='executing-plans')
+        result={'structuredContent':{**meta,'skill':skill,'offset':offset,'content':chunk,'sha256':payload['sha256'],'total_chars':len(text),'next_offset':offset+len(chunk) if offset+len(chunk)<len(text) else None}}
+    print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':result}),flush=True)
+""" % json.dumps(payload))
+            (froot/'.mcp.json').write_text(json.dumps({'mcpServers':{'fable5_skills':{'command':sys.executable,'args':[str(script)]}}}))
+            class TestClient(c.McpClient):
+                def close(self):
+                    super().close()
+                    self.process.stdout.close()
+            with patch.object(c,'_native_catalog',return_value=catalog),patch.object(c,'McpClient',TestClient):
+                result=c.installed_health(root/'probe','7.0.2',inventory,home)
+            self.assertTrue(result['passed'],result['errors'])
+            self.assertGreater(result['fable_helper']['pages'],1)
+            self.assertTrue(result['fable_helper']['partial'])
+
+    def test_legacy_payload_with_provenance_is_not_a_rollback_exception(self):
+        for field, value in [('catalog_source', None), ('warnings', []), ('native_context_verified', False), ('source_warning_count', 0)]:
+            with self.subTest(field=field),tempfile.TemporaryDirectory() as td:
+                root=Path(td);home,catalog,expected,skills,fpath,inventory=self.fixture(root)
+                def change(payload): payload[field]=value
+                with patch.object(c,'_native_catalog',return_value=catalog),patch.object(c,'McpClient',self.fake_client(skills,expected,'legacy',search_change=change)):
+                    result=c.installed_health(root/'probe','7.0.2',inventory,home)
+                self.assertFalse(result['passed'])
+
+    def test_inventory_failure_stops_before_helper_probe(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);home,catalog,expected,skills,fpath,inventory=self.fixture(root)
+            inventory['skills/executing-plans/SKILL.md']='0'*64
+            with patch.object(c,'_native_catalog',return_value=catalog),patch.object(c,'McpClient') as client:
+                result=c.installed_health(root/'probe','7.0.2',inventory,home)
+            self.assertFalse(result['passed'])
+            client.assert_not_called()
 
 if __name__=='__main__':
     unittest.main()

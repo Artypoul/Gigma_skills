@@ -584,24 +584,75 @@ def _tool_payload(result: dict) -> dict:
     raise RuntimeError('Fable MCP returned an unsupported payload.')
 
 
-def _helper_probe(cwd: Path, fable_skill: dict, expected: dict, codex_home: Path, plugin_id=PLUGIN_ID) -> dict:
+def _helper_probe(cwd: Path, fable_skill: dict, expected: dict, codex_home: Path, plugin_id=PLUGIN_ID, *, package_health=False) -> dict:
     # .../.agents/skills/fable5-codex/SKILL.md -> installed plugin root.
     plugin_root = Path(fable_skill['path']).parents[3]
     wiring = json.loads((plugin_root/'.mcp.json').read_text(encoding='utf-8-sig'))['mcpServers']['fable5_skills']
     command = shutil.which(wiring['command']) or wiring['command']
     args = wiring.get('args',[])
     client = McpClient(command,args,plugin_root/wiring.get('cwd','.'),_env(codex_home))
+    provenance_fields = ('catalog_source','native_context_verified','source_warning_count','warnings')
+    def provenance(payload):
+        if (all(key not in payload for key in provenance_fields) and payload.get('partial') is False
+                and type(payload.get('warning_count')) is int and payload['warning_count'] == 0):
+            return 'legacy'
+        if (not package_health and payload.get('catalog_source') == 'native_host' and payload.get('native_context_verified') is True
+                and payload.get('partial') is False and type(payload.get('warning_count')) is int
+                and payload['warning_count'] == 0 and type(payload.get('source_warning_count')) is int
+                and payload['source_warning_count'] == 0 and payload.get('warnings') == []):
+            return 'native_host'
+        if (package_health and payload.get('catalog_source') == 'configured_cache'
+                and payload.get('native_context_verified') is False and payload.get('partial') is True
+                and type(payload.get('warning_count')) is int and payload['warning_count'] == 1
+                and type(payload.get('source_warning_count')) is int and payload['source_warning_count'] == 0
+                and payload.get('warnings') == ['NATIVE_CONTEXT_UNVERIFIED']):
+            return 'configured_cache'
+        raise RuntimeError('Fable helper catalogue provenance or warnings are incomplete.')
+    def skill_state(skill, source):
+        if source == 'legacy':
+            return 'enabled_in_native_context' not in skill
+        return skill.get('enabled_in_native_context', 'missing') is (None if source == 'configured_cache' else True)
     try:
         client.rpc('initialize',{'protocolVersion':'2025-03-26','capabilities':{},'clientInfo':{'name':'superpowers-updater-test','version':'0.1.0'}})
         client.send({'jsonrpc':'2.0','method':'notifications/initialized','params':{}})
         tools = client.rpc('tools/list',{})
         if not {'search_skills','read_skill'}.issubset({x['name'] for x in tools.get('tools',[])}):
             raise RuntimeError('Fable search/read tools are unavailable.')
-        response = _tool_payload(client.rpc('tools/call',{'name':'search_skills','arguments':{'cwd':str(cwd),'query':'superpowers','limit':50}}))
-        if response.get('partial') or response.get('next_offset') is not None:
-            raise RuntimeError('Fable helper catalogue is partial or paginated beyond the supported gate.')
-        found = response.get('skills',[])
-        by_name = {x['name'].split(':')[-1]:x for x in found if x.get('plugin_id') == plugin_id}
+        query = '' if package_health else 'superpowers'
+        response = _tool_payload(client.rpc('tools/call',{'name':'search_skills','arguments':{'cwd':str(cwd),'query':query,'limit':50}}))
+        source = provenance(response)
+        found = list(response.get('skills',[]))
+        if package_health:
+            catalog_sha = response.get('catalog_sha256')
+            total = response.get('total')
+            if (not isinstance(catalog_sha,str) or not re.fullmatch(r'[0-9a-f]{64}',catalog_sha)
+                    or type(total) is not int or total < 0):
+                raise RuntimeError('Fable helper catalogue digest or total is invalid.')
+            next_offset = response.get('next_offset')
+            offset = 0
+            while next_offset is not None:
+                if type(next_offset) is not int or next_offset != offset + 50 or next_offset >= total or next_offset > 1000000:
+                    raise RuntimeError('Fable helper catalogue pagination is invalid.')
+                offset = next_offset
+                page = _tool_payload(client.rpc('tools/call',{'name':'search_skills','arguments':{'cwd':str(cwd),'query':query,'limit':50,'offset':offset}}))
+                if provenance(page) != source or page.get('catalog_sha256') != catalog_sha or page.get('total') != total:
+                    raise RuntimeError('Fable helper catalogue changed between pages.')
+                if not isinstance(page.get('skills'),list):
+                    raise RuntimeError('Fable helper catalogue page is invalid.')
+                found.extend(page['skills'])
+                next_offset = page.get('next_offset')
+            if len(found) != total:
+                raise RuntimeError('Fable helper catalogue is incomplete.')
+        elif response.get('next_offset') is not None:
+            raise RuntimeError('Fable helper catalogue is paginated beyond the supported gate.')
+        by_name = {}
+        for item in found:
+            if item.get('plugin_id') != plugin_id: continue
+            name = item['name'].split(':')[-1]
+            if name in CRITICAL:
+                if name in by_name or not skill_state(item,source):
+                    raise RuntimeError('Fable helper has ambiguous skill identity or native state.')
+                by_name[name] = item
         if not CRITICAL.issubset(by_name):
             raise RuntimeError('Fable helper does not see the staged candidate critical skills.')
         for name in CRITICAL:
@@ -611,20 +662,39 @@ def _helper_probe(cwd: Path, fable_skill: dict, expected: dict, codex_home: Path
         pages, offset, total, actual_sha = [],0,None,None
         while True:
             page = _tool_payload(client.rpc('tools/call',{'name':'read_skill','arguments':{'cwd':str(cwd),'skill_id':selected['id'],'offset':offset,'limit':32000}}))
-            if page.get('partial'):
-                raise RuntimeError('Fable skill read is partial.')
-            if actual_sha is not None and page['sha256'] != actual_sha:
-                raise RuntimeError('Skill changed during paginated read.')
-            pages.append(page.get('content',''))
-            total,actual_sha = page['total_chars'],page['sha256']
-            offset = page.get('next_offset')
-            if offset is None:
+            if provenance(page) != source:
+                raise RuntimeError('Fable skill read provenance changed.')
+            skill = page.get('skill')
+            if not isinstance(skill,dict) or not skill_state(skill,source) or any(skill.get(k) != selected.get(k) for k in ('id','name','path','plugin_id')):
+                raise RuntimeError('Fable skill identity changed during read.')
+            page_sha=page.get('sha256'); page_total=page.get('total_chars'); content=page.get('content')
+            if (not isinstance(page_sha,str) or not re.fullmatch(r'[0-9a-f]{64}',page_sha)
+                    or type(page_total) is not int or page_total <= 0 or not isinstance(content,str)
+                    or type(page.get('offset')) is not int or page['offset'] != offset
+                    or (actual_sha is not None and page_sha != actual_sha)
+                    or (total is not None and page_total != total)):
+                raise RuntimeError('Fable skill read metadata changed.')
+            total,actual_sha = page_total,page_sha
+            pages.append(content)
+            next_offset = page.get('next_offset')
+            end = offset + len(content)
+            if next_offset is None:
+                if end != total: raise RuntimeError('Fable skill read ended before its full content.')
                 break
-            if len(pages)>40:
-                raise RuntimeError('Unexpected skill pagination length.')
-        if actual_sha != expected['executing-plans']['sha256'] or len(''.join(pages)) != total:
+            if type(next_offset) is not int or next_offset != end or end <= offset or end >= total or len(pages) >= 40:
+                raise RuntimeError('Invalid skill pagination.')
+            offset = next_offset
+        text=''.join(pages)
+        expected_bytes = Path(expected['executing-plans']['path']).read_bytes()
+        if (actual_sha != expected['executing-plans']['sha256']
+                or hashlib.sha256(expected_bytes).hexdigest() != actual_sha
+                or text != expected_bytes.decode('utf-8-sig')):
             raise RuntimeError('Fable read did not return the exact complete staged skill.')
-        return {'total':response['total'],'partial':False,'read_skill':'executing-plans','sha256':actual_sha,'fully_read':True,'pages':len(pages)}
+        return {'total':response['total'],'partial':response['partial'],'catalog_source':response.get('catalog_source'),
+                'native_context_verified':response.get('native_context_verified'),'source_warning_count':response.get('source_warning_count'),
+                'warning_count':response['warning_count'],'warnings':response.get('warnings'),
+                'scope':'package_health' if package_health else 'strict_preflight',
+                'read_skill':'executing-plans','sha256':actual_sha,'fully_read':True,'pages':len(pages)}
     finally:
         client.close()
 
@@ -727,7 +797,7 @@ def installed_health(probe_dir: Path, expected_version: str, expected_inventory,
             raise RuntimeError('Installed package inventory differs from the verified candidate.')
         source=candidate_skills({'package_path':str(package),'stage_path':str(package.parent),'version':expected_version})
         expected,fable=verify_catalog(catalog,source,expected_version,plugin_id)
-        helper=_helper_probe(probe_dir,fable,expected,codex_home,plugin_id)
+        helper=_helper_probe(probe_dir,fable,expected,codex_home,plugin_id,package_health=True)
         result.update(passed=True,status='passed',package_path=str(package),verified_files=len(inventory),
             critical_skills=sorted(CRITICAL),fable_helper=helper,enabled_plugin_ids=[plugin_id])
     except Exception as error:
