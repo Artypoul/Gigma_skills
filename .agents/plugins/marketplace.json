@@ -152,12 +152,12 @@
     },
     {
       "name": "fable5-codex",
-      "version": "1.4.1",
+      "version": "1.4.2",
       "description": "Source-based Fable 5 workflow for Codex and ChatGPT through pinned GitHub sources.",
       "source": {
         "source": "url",
         "url": "https://github.com/Artypoul/claude-fable-5-system-prompt.git",
-        "sha": "1d77c8872e10f295159746e257a446d320e4b0c0"
+        "sha": "a0d7b991d29e2cb0f18f3501fd1152335a3bb90c"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -178,10 +178,10 @@
     {
       "name": "superpowers",
       "version": "7.0.2",
-      "description": "Upstream engineering skills for planning, TDD, debugging, parallel execution and code review, pinned as a complete Codex package.",
+      "description": "Engineering skills for planning, TDD, debugging, parallel execution and code review, pinned as a complete Codex package from the user-owned fork.",
       "source": {
         "source": "url",
-        "url": "https://github.com/obra/superpowers.git",
+        "url": "https://github.com/Artypoul/superpowers.git",
         "sha": "22f0b463e7a5e579904dd6211a520321035526f7"
       },
       "policy": {
@@ -192,7 +192,7 @@
       "interface": {
         "displayName": "Superpowers",
         "shortDescription": "Planning, TDD, debugging and code review",
-        "longDescription": "Complete upstream Superpowers package for Codex. Uses its native Codex manifest with shared hooks disabled. The portable Gigma profile configures cooperation with Fable 5, reusing existing plans and verification evidence.",
+        "longDescription": "Complete Superpowers package from Artypoul/superpowers, preserving upstream authorship and license. Uses its native Codex manifest with shared hooks disabled. The portable Gigma profile keeps the selected source and configures cooperation with Fable 5, reusing existing plans and verification evidence.",
         "developerName": "Jesse Vincent",
         "category": "Developer Tools",
         "defaultPrompt": [

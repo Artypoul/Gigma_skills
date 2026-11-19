@@ -3,14 +3,14 @@
   "plugins": [
     {
       "name": "fable5-codex",
-      "version": "1.4.1",
+      "version": "1.4.2",
       "runtimes": [
         "codex"
       ],
       "source": {
         "source": "url",
         "url": "https://github.com/Artypoul/claude-fable-5-system-prompt.git",
-        "sha": "1d77c8872e10f295159746e257a446d320e4b0c0"
+        "sha": "a0d7b991d29e2cb0f18f3501fd1152335a3bb90c"
       },
       "skills": [
         "fable5-codex"
@@ -31,7 +31,7 @@
       ],
       "source": {
         "source": "url",
-        "url": "https://github.com/obra/superpowers.git",
+        "url": "https://github.com/Artypoul/superpowers.git",
         "sha": "22f0b463e7a5e579904dd6211a520321035526f7"
       },
       "skills": [
@@ -56,7 +56,7 @@
         "Codex CLI"
       ],
       "manifest": ".codex-plugin/plugin.json",
-      "note": "Complete upstream package. The Codex manifest declares an empty hooks object; this entry is intentionally absent from the Claude catalogue. Additional global cooperation rules are installed separately by codex-profile."
+      "note": "Complete package from the user-owned Artypoul/superpowers fork, pinned without changing the verified 7.0.2 content. Upstream authorship and MIT license are preserved. The Codex manifest declares an empty hooks object; this entry is intentionally absent from the Claude catalogue. Additional global cooperation rules are installed separately by codex-profile. Acquisition and updates must retain this repository identity; an absent release is not permission to fall back to another owner."
     },
     {
       "name": "gigma-mcp",

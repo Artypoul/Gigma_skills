@@ -96,7 +96,7 @@ class MarketplaceSourcesTests(unittest.TestCase):
 
 
 class SuperpowersCatalogueTests(unittest.TestCase):
-    """The portable profile consumes the complete Codex-only upstream package."""
+    """The portable profile consumes the complete package from the owned fork."""
 
     def setUp(self):
         self.root = Path(__file__).resolve().parents[1]
@@ -112,7 +112,7 @@ class SuperpowersCatalogueTests(unittest.TestCase):
     def test_canonical_whole_package_has_an_immutable_source(self):
         entry = self.superpowers()
         self.assertEqual(entry['source']['source'], 'url')
-        self.assertEqual(entry['source']['url'], 'https://github.com/obra/superpowers.git')
+        self.assertEqual(entry['source']['url'], 'https://github.com/Artypoul/superpowers.git')
         self.assertRegex(entry['source']['sha'], r'^[0-9a-f]{40}$')
         self.assertNotIn('path', entry['source'])
         self.assertEqual(entry['manifest'], '.codex-plugin/plugin.json')

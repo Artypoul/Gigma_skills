@@ -59,16 +59,42 @@ def _repo_name(repo: str) -> str:
     return repo
 
 
+def _url_repo(parsed: urllib.parse.SplitResult) -> str:
+    parts = parsed.path.split('/')
+    if parsed.netloc == 'api.github.com' and len(parts) >= 4 and parts[1] == 'repos':
+        return _repo_name('/'.join(parts[2:4]))
+    if parsed.netloc == 'codeload.github.com' and len(parts) >= 3:
+        return _repo_name('/'.join(parts[1:3]))
+    raise SourceError('Release source URL lacks a repository identity.')
+
+
+def _validate_redirect_url(url: str, repo: str) -> None:
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme != 'https' or parsed.netloc not in {'api.github.com', 'codeload.github.com'} or parsed.username or parsed.password:
+        raise SourceError('Unexpected release-source redirect.')
+    if _url_repo(parsed).casefold() != repo.casefold():
+        raise SourceError('Release-source redirect changed repository identity.')
+
+
+class _SourceRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def __init__(self, repo: str):
+        super().__init__()
+        self.repo = repo
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _validate_redirect_url(newurl, self.repo)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def _request_bytes(url: str, maximum: int = MAX_ARCHIVE_BYTES) -> bytes:
     parsed = urllib.parse.urlsplit(url)
     if parsed.scheme != 'https' or parsed.netloc not in {'api.github.com', 'codeload.github.com'} or parsed.username or parsed.password:
         raise SourceError('Unsupported release source URL.')
+    repo = _url_repo(parsed)
     request = urllib.request.Request(url, headers={'User-Agent': 'Codex-Superpowers-Updater/1', 'Accept': 'application/vnd.github+json' if parsed.netloc == 'api.github.com' else 'application/zip'})
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            final = urllib.parse.urlsplit(response.geturl())
-            if final.scheme != 'https' or final.netloc not in {'api.github.com', 'codeload.github.com'}:
-                raise SourceError('Unexpected release-source redirect.')
+        with urllib.request.build_opener(_SourceRedirectHandler(repo)).open(request, timeout=30) as response:
+            _validate_redirect_url(response.geturl(), repo)
             length = response.headers.get('Content-Length')
             if length and int(length) > maximum:
                 raise SourceError('Release response exceeds size limit.')
@@ -96,7 +122,7 @@ def _get_json(url: str) -> dict:
     return result
 
 
-def latest_release(repo: str = 'obra/superpowers') -> dict:
+def latest_release(repo: str) -> dict:
     repo = _repo_name(repo)
     api_url = f'https://api.github.com/repos/{repo}/releases/latest'
     payload = _get_json(api_url)
@@ -326,16 +352,22 @@ def _build_package(upstream: Path, package: Path, version: str, baseline_package
 
 
 def stage_release(release: dict, stage_root: str | Path, baseline_package: str | Path | None = None) -> dict:
-    repo = _repo_name(release.get('repo', 'obra/superpowers'))
+    repo = _repo_name(release.get('repo'))
     tag = release.get('tag')
     version = '.'.join(map(str, version_tuple(tag)))
     if release.get('version') != version:
         raise SourceError('Release version and tag disagree.')
-    commit_url = f'https://api.github.com/repos/{repo}/commits/{urllib.parse.quote(tag, safe="")}'
+    expected = release.get('expected_commit')
+    if expected is not None and (not isinstance(expected, str) or not _SHA.fullmatch(expected)):
+        raise SourceError('Invalid pinned commit.')
+    ref = expected if expected is not None else tag
+    commit_url = f'https://api.github.com/repos/{repo}/commits/{urllib.parse.quote(ref, safe="")}'
     commit_info = _get_json(commit_url)
     commit = str(commit_info.get('sha', '')).lower()
     if not _SHA.fullmatch(commit):
         raise SourceError('Release did not resolve to an immutable Git commit.')
+    if expected is not None and commit != expected:
+        raise SourceError('Resolved commit differs from the pinned commit.')
     archive_url = f'https://codeload.github.com/{repo}/zip/{commit}'
     archive = _request_bytes(archive_url, MAX_ARCHIVE_BYTES)
     stage = Path(stage_root).resolve() / f'release-{version}-{commit[:12]}'

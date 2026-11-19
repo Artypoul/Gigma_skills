@@ -141,6 +141,34 @@ class Manager:
             raise UpdateError('Package source escapes the managed marketplace.')
         return path
 
+    def source_repo(self, old_source, old_files, old_version, provenance_bytes=None):
+        from source import _repo_name, SourceError
+        try:
+            if provenance_bytes is None:
+                provenance_bytes=(self.root/'provenance.json').read_bytes()
+            provenance=json.loads(provenance_bytes.decode('utf-8-sig'))
+            origin=provenance['origin']
+            repo=_repo_name(origin['repo'])
+            if (provenance['version']!=old_version or origin['version']!=old_version
+                    or provenance['sourceFiles']!=old_files
+                    or not re.fullmatch(r'[0-9a-f]{40}',origin['commit'])):
+                raise ValueError('Provenance does not match the active package')
+            receipt=self.state_dir/'marketplace-owned.json'
+            if receipt.exists():
+                catalog=Path(json.loads(receipt.read_text(encoding='utf-8-sig'))['source_root'])
+                lock=json.loads((catalog/'external-plugins.lock.json').read_text(encoding='utf-8-sig'))
+                manifest=json.loads((catalog/'.agents/plugins/marketplace.json').read_text(encoding='utf-8-sig'))
+                pins=[x for x in lock['plugins'] if x['name']=='superpowers']
+                entries=[x for x in manifest['plugins'] if x['name']=='superpowers']
+                if len(pins)!=1 or len(entries)!=1 or pins[0]['source']!=entries[0]['source']:
+                    raise ValueError('Catalog lock and marketplace disagree')
+                match=re.fullmatch(r'https://github\.com/([^/]+/[^/]+?)(?:\.git)?',pins[0]['source']['url'])
+                if not match or _repo_name(match[1]).casefold()!=repo.casefold():
+                    raise ValueError('Catalog and active provenance select different repositories')
+            return repo
+        except (OSError, ValueError, KeyError, TypeError, SourceError) as error:
+            raise Conflict('Trusted Superpowers source provenance is missing or inconsistent; source migration requires explicit resolution.') from error
+
     def preferences(self):
         settings=tomllib.loads((self.home/'config.toml').read_text(encoding='utf-8-sig'))
         for plugin in [self.plugin_id,fable_identity(settings)]:
@@ -262,7 +290,10 @@ class Manager:
             old_files=inventory(old_source)
             old_package=json.loads((old_source/'.codex-plugin/plugin.json').read_text(encoding='utf-8-sig'))
             old_version=old_package['version']
-            release=self.latest()
+            repo=self.source_repo(old_source,old_files,old_version,old_provenance)
+            release=self.latest(repo)
+            if release.get('repo','').casefold()!=repo.casefold():
+                raise Conflict('Release repository differs from the active source.')
             if version_key(release['version'])<=version_key(old_version):
                 return {'status':'unchanged','version':old_version,'latest':release['version']}
             verified_context=self.backend_context()
@@ -284,6 +315,8 @@ class Manager:
                     or old_installation['installed_cache'] not in [None,old_version]):
                 raise Conflict('Native installation differs from the verified baseline; activation aborted.')
             candidate=self.stage(release,run_dir/'candidate',baseline_package=old_source)
+            if candidate.get('repo','').casefold()!=repo.casefold():
+                raise Conflict('Candidate repository differs from the active source.')
             if candidate['version']!=release['version']:
                 raise UpdateError('Candidate version differs from selected release.')
             candidate_path=Path(candidate['package_path'])
@@ -298,6 +331,10 @@ class Manager:
                 raise UpdateError('Candidate changed during compatibility verification.')
             self.check_preferences(before)
             self.check_context(verified_context)
+            if provenance_path.read_bytes()!=old_provenance:
+                raise Conflict('Source provenance changed during verification.')
+            if self.source_repo(old_source,old_files,old_version,old_provenance).casefold()!=repo.casefold():
+                raise Conflict('Trusted source changed during verification.')
             if self.marketplace.read_bytes()!=old_bytes or inventory(old_source)!=old_files:
                 raise Conflict('Active package source changed during verification.')
             destination=self.root/'packages'/(candidate['version']+'-'+candidate['commit'][:12])

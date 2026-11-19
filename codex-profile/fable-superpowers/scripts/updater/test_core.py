@@ -38,12 +38,13 @@ class TransactionTests(unittest.TestCase):
         write_json(self.root/'.agents/plugins/marketplace.json',{'name':'fable-superpowers','plugins':[{'name':'superpowers','source':{'source':'local','path':'./superpowers'}}]})
         self.marketplace=self.root/'.agents/plugins/marketplace.json';self.original=self.marketplace.read_bytes()
         self.backend=Backend(self.old);self.compat_calls=0;self.stage_calls=0
+        write_json(self.root/'provenance.json',{'version':'7.0.1','origin':{'repo':'Artypoul/superpowers','version':'7.0.1','commit':'b'*40},'sourceFiles':inventory(self.old)})
     def tearDown(self): self.temp.cleanup()
     def package(self,path,version):
         (path/'.codex-plugin').mkdir(parents=True)
         write_json(path/'.codex-plugin/plugin.json',{'name':'superpowers','version':version,'skills':'./skills/','hooks':{}})
         (path/'content.txt').write_text(version)
-    def latest(self): return {'version':'7.0.2','tag':'v7.0.2','id':42}
+    def latest(self,repo): return {'repo':repo,'version':'7.0.2','tag':'v7.0.2','id':42}
     def stage(self,release,stage_root,baseline_package=None):
         self.stage_calls+=1;package=stage_root/'package';self.package(package,release['version'])
         return {**release,'package_path':str(package),'stage_path':str(stage_root),'commit':'a'*40}
@@ -52,6 +53,43 @@ class TransactionTests(unittest.TestCase):
     def assert_old(self):
         self.assertEqual(self.marketplace.read_bytes(),self.original)
         self.assertEqual(self.backend.installed,'7.0.1')
+    def test_source_provenance_is_required_before_query(self):
+        calls=[]
+        (self.root/'provenance.json').unlink()
+        with self.assertRaises(Conflict):
+            self.manager(latest=lambda *args: calls.append(args)).run()
+        self.assertEqual(calls, [])
+
+    def test_release_and_catalog_mismatch_are_rejected(self):
+        with self.assertRaises(Conflict):
+            self.manager(latest=lambda repo:{'repo':'obra/superpowers','version':'7.0.2'}).run()
+        self.assertEqual(self.stage_calls,0)
+        catalog=self.base/'catalog'
+        foreign={'source':'url','url':'https://github.com/obra/superpowers.git','sha':'b'*40}
+        write_json(catalog/'external-plugins.lock.json',{'plugins':[{'name':'superpowers','source':foreign}]})
+        write_json(catalog/'.agents/plugins/marketplace.json',{'plugins':[{'name':'superpowers','source':foreign}]})
+        write_json(self.root/'updates/marketplace-owned.json',{'source_root':str(catalog)})
+        with self.assertRaises(Conflict):self.manager().run()
+        self.assertEqual(self.stage_calls,0)
+
+    def test_check_queries_only_verified_source_and_rejects_missing_provenance(self):
+        import update
+        argv=['update.py','check','--root',str(self.root),'--home',str(self.home)]
+        with patch.object(update,'NativeBackend'),patch.object(update,'latest_release',return_value={'repo':'Artypoul/superpowers','version':'7.0.2'}) as latest,patch('sys.argv',argv),patch('builtins.print'):
+            self.assertEqual(update.main(),0)
+            latest.assert_called_once_with('Artypoul/superpowers')
+        (self.root/'provenance.json').unlink()
+        with patch.object(update,'NativeBackend'),patch.object(update,'latest_release') as latest,patch('sys.argv',argv),patch('builtins.print'):
+            self.assertEqual(update.main(),2)
+            latest.assert_not_called()
+
+    def test_candidate_cannot_change_repository(self):
+        original=self.stage
+        def wrong(*args,**kwargs):return {**original(*args,**kwargs),'repo':'obra/superpowers'}
+        manager=self.manager();manager.stage=wrong
+        with self.assertRaises(Conflict):manager.run()
+        self.assertEqual(self.backend.calls,[])
+
     def test_success_preserves_preferences_and_old_package(self):
         agents=(self.home/'AGENTS.md').read_bytes();config=(self.home/'config.toml').read_bytes()
         result=self.manager().run()
@@ -67,7 +105,7 @@ class TransactionTests(unittest.TestCase):
         self.assertEqual(path.read_bytes(),before)
     def test_same_or_older_version_does_not_stage_or_install(self):
         for version in ['7.0.1','6.3.0']:
-            self.assertEqual(self.manager(latest=lambda:{'version':version}).run()['status'],'unchanged')
+            self.assertEqual(self.manager(latest=lambda repo:{'repo':repo,'version':version}).run()['status'],'unchanged')
         self.assertEqual(self.stage_calls,0);self.assertEqual(self.backend.calls,[]);self.assert_old()
     def test_pointer_failure_rolls_back(self):
         def fail(point):
@@ -168,7 +206,7 @@ class TransactionTests(unittest.TestCase):
             # The callback runs inside the update lock.
             with self.assertRaises(Busy):
                 with exclusive_lock(self.root/'updates/update.lock'): pass
-        self.assertEqual(self.manager(recovery=recovery,latest=lambda:{'version':'7.0.1'}).run()['status'],'unchanged')
+        self.assertEqual(self.manager(recovery=recovery,latest=lambda repo:{'repo':repo,'version':'7.0.1'}).run()['status'],'unchanged')
         self.assertEqual(path.read_bytes(),original);self.assertEqual(self.stage_calls,0)
     def test_unsafe_trust_recovery_blocks_normal_update(self):
         def recovery(): raise Conflict('Owned trust settings changed independently')
@@ -268,8 +306,7 @@ class TransactionTests(unittest.TestCase):
         with self.assertRaises(Conflict): self.manager().run()
         self.assertIn('enabled=false',path.read_text());self.assertEqual(self.stage_calls,0)
     def test_failure_after_provenance_restores_original_metadata(self):
-        provenance=self.root/'provenance.json';original=b'{"version":"7.0.1","keep":"original"}'
-        provenance.write_bytes(original)
+        provenance=self.root/'provenance.json';original=provenance.read_bytes()
         def fail(point):
             if point=='after_provenance': raise RuntimeError('Injected metadata boundary failure')
         self.assertEqual(self.manager(failpoint=fail).run()['status'],'rolled_back')
@@ -281,7 +318,7 @@ class TransactionTests(unittest.TestCase):
         with self.assertRaises(Crash): self.manager(failpoint=crash).run()
         self.assertTrue((self.root/'provenance.json').exists())
         self.assertEqual(self.manager().run()['status'],'recovered');self.assert_old()
-        self.assertFalse((self.root/'provenance.json').exists())
+        self.assertEqual(json.loads((self.root/'provenance.json').read_text())['version'],'7.0.1')
     def test_modified_old_source_uses_verified_backup_before_restoring_pointer(self):
         def fail(point):
             if point=='after_health':
