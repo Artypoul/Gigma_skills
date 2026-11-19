@@ -163,6 +163,153 @@ class AcceptanceTests(unittest.TestCase):
         result = runner.assess_observation(self.observation(), {'mechanical': ['activation_before_delegation']}, self.activation_events())
         self.assertEqual(result['status'], 'passed')
 
+    def test_blocked_status_invalidates_prior_activation(self):
+        import copy
+        events = self.activation_events()
+        blocked = copy.deepcopy(events[-2])
+        blocked['params']['item']['result']['structuredContent']['status'] = 'blocked'
+        events.insert(-1, blocked)
+        result = runner.assess_observation(self.observation(), {'mechanical': ['activation_before_delegation']}, events)
+        self.assertEqual(result['status'], 'failed')
+        self.assertNotEqual(result['criteria']['activation_before_delegation']['status'], 'satisfied')
+
+    def test_later_invalid_receipts_invalidate_activation(self):
+        import copy
+        for mutation in ['partial', 'warning', 'error', 'failed', 'cwd', 'identity']:
+            with self.subTest(mutation=mutation):
+                events = self.activation_events()
+                receipt = copy.deepcopy(events[-2])
+                item = receipt['params']['item']
+                value = item['result']['structuredContent']
+                if mutation == 'partial': value['partial'] = True
+                elif mutation == 'warning': value['warning_count'] = 1
+                elif mutation == 'error': item['result']['isError'] = True
+                elif mutation == 'failed': item['status'] = 'failed'
+                elif mutation == 'cwd': value['cwd'] = str(ROOT.parent)
+                else: value['skills']['fable']['plugin_id'] = 'different'
+                events.insert(-1, receipt)
+                result = runner.assess_observation(self.observation(), {'mechanical': ['activation_before_delegation']}, events)
+                self.assertEqual(result['status'], 'failed')
+
+    def test_later_conflicting_read_invalidates_activation(self):
+        import copy
+        events = self.activation_events()
+        receipt = copy.deepcopy(events[1])
+        receipt['params']['item']['result']['structuredContent']['skill']['plugin_id'] = 'different'
+        events.insert(-1, receipt)
+        self.assertEqual(runner.assess_observation(self.observation(), {'mechanical': ['activation_before_delegation']}, events)['status'], 'failed')
+
+    def test_changed_content_with_same_digest_invalidates_activation(self):
+        import copy
+        events = self.activation_events()
+        read = copy.deepcopy(events[1])
+        value = read['params']['item']['result']['structuredContent']
+        value['content'] = 'X' + value['content'][1:]
+        events.insert(-1, read)
+        self.assertEqual(runner.assess_observation(self.observation(), {'mechanical': ['activation_before_delegation']}, events)['status'], 'failed')
+
+    def test_compatible_discovery_after_ready_preserves_activation(self):
+        import copy
+        events = self.activation_events()
+        events.insert(-1, copy.deepcopy(events[0]))
+        self.assertEqual(runner.assess_observation(self.observation(), {'mechanical': ['activation_before_delegation']}, events)['status'], 'passed')
+
+    def test_repeated_discovery_and_reads_of_distinct_namesakes_preserve_activation(self):
+        import copy
+        for read_index in (0, 1):
+            with self.subTest(read_index=read_index):
+                events = self.activation_events()
+                discovery = copy.deepcopy(events[0])
+                skills = []
+                for index in (0, 1):
+                    content = 'review fixture ' + str(index)
+                    skills.append({'id': 'review-' + str(index), 'name': 'review',
+                                   'path': '/skills/review-' + str(index), 'plugin_id': 'plugin-' + str(index),
+                                   'sha256': hashlib.sha256(content.encode()).hexdigest()})
+                discovery['params']['item']['result']['structuredContent']['skills'] = skills
+                read = copy.deepcopy(events[1])
+                content = 'review fixture ' + str(read_index)
+                read['params']['item']['result']['structuredContent'].update(
+                    skill=skills[read_index], sha256=skills[read_index]['sha256'],
+                    content=content, total_chars=len(content))
+                events[-1:-1] = [discovery, copy.deepcopy(discovery), read]
+                self.assertEqual(runner.assess_observation(self.observation(), {'mechanical': ['activation_before_delegation']}, events)['status'], 'passed')
+
+    def test_unrelated_skill_read_after_ready_preserves_activation(self):
+        import copy
+        events = self.activation_events()
+        read = copy.deepcopy(events[1])
+        value = read['params']['item']['result']['structuredContent']
+        content = 'unrelated complete skill'
+        digest = hashlib.sha256(content.encode()).hexdigest()
+        value.update(skill={'id': 'subagent-driven-development', 'name': 'subagent-driven-development',
+                            'path': '/skills/subagent-driven-development', 'plugin_id': 'fixture', 'sha256': digest},
+                     sha256=digest, content=content, total_chars=len(content))
+        events.insert(-1, read)
+        self.assertEqual(runner.assess_observation(self.observation(), {'mechanical': ['activation_before_delegation']}, events)['status'], 'passed')
+
+    def test_catalog_change_during_collection_invalidates_old_chain(self):
+        import copy
+        events = self.activation_events()
+        changed = copy.deepcopy(events[0])
+        changed['params']['item']['result']['structuredContent']['catalog_sha256'] = 'b' * 64
+        events.insert(-2, changed)
+        self.assertEqual(runner.assess_observation(self.observation(), {'mechanical': ['activation_before_delegation']}, events)['status'], 'failed')
+
+    def test_complete_fresh_chain_after_catalog_change_is_accepted(self):
+        import copy
+        events = self.activation_events()
+        changed = copy.deepcopy(events[0])
+        changed['params']['item']['result']['structuredContent']['catalog_sha256'] = 'b' * 64
+        events = events[:-2] + [changed] + self.activation_events()
+        self.assertEqual(runner.assess_observation(self.observation(), {'mechanical': ['activation_before_delegation']}, events)['status'], 'passed')
+
+    def test_conflicting_discovery_during_collection_invalidates_old_chain(self):
+        import copy
+        events = self.activation_events()
+        changed = copy.deepcopy(events[0])
+        changed['params']['item']['result']['structuredContent']['skills'][0]['plugin_id'] = 'different'
+        events.insert(-2, changed)
+        self.assertEqual(runner.assess_observation(self.observation(), {'mechanical': ['activation_before_delegation']}, events)['status'], 'failed')
+
+    def test_started_tool_event_does_not_invalidate_activation(self):
+        import copy
+        events = self.activation_events()
+        started = copy.deepcopy(events[-2])
+        started['method'] = 'item/started'
+        started['params']['item'].pop('result')
+        started['params']['item']['status'] = 'inProgress'
+        events.insert(-1, started)
+        self.assertEqual(runner.assess_observation(self.observation(), {'mechanical': ['activation_before_delegation']}, events)['status'], 'passed')
+
+    def test_invalidation_between_delegations_fails(self):
+        import copy
+        events = self.activation_events()
+        blocked = copy.deepcopy(events[-2])
+        blocked['params']['item']['result']['structuredContent']['status'] = 'blocked'
+        events.extend([blocked, copy.deepcopy(events[-1])])
+        self.assertEqual(runner.assess_observation(self.observation(), {'mechanical': ['activation_before_delegation']}, events)['status'], 'failed')
+
+    def test_fresh_complete_activation_after_blocked_is_accepted(self):
+        import copy
+        events = self.activation_events()
+        blocked = copy.deepcopy(events[-2])
+        blocked['params']['item']['result']['structuredContent']['status'] = 'blocked'
+        events = events[:-1] + [blocked] + self.activation_events()
+        self.assertEqual(runner.assess_observation(self.observation(), {'mechanical': ['activation_before_delegation']}, events)['status'], 'passed')
+
+    def test_other_cwd_or_thread_does_not_invalidate_activation(self):
+        import copy
+        for context in ['cwd', 'thread']:
+            with self.subTest(context=context):
+                events = self.activation_events()
+                blocked = copy.deepcopy(events[-2])
+                blocked['params']['item']['result']['structuredContent']['status'] = 'blocked'
+                if context == 'cwd': blocked['params']['item']['arguments']['cwd'] = str(ROOT.parent)
+                else: blocked['params']['threadId'] = 'other'
+                events.insert(-1, blocked)
+                self.assertEqual(runner.assess_observation(self.observation(), {'mechanical': ['activation_before_delegation']}, events)['status'], 'passed')
+
     def test_early_delegation_cannot_be_fixed_by_later_activation(self):
         events = self.activation_events()
         events.insert(0, events.pop())
@@ -173,6 +320,45 @@ class AcceptanceTests(unittest.TestCase):
         events.insert(0, {'method': 'rawResponseItem/completed', 'params': {'threadId': 'parent',
             'item': {'type': 'function_call', 'name': 'spawnAgent'}}})
         self.assertEqual(runner.assess_observation(self.observation(), {'mechanical': ['activation_before_delegation']}, events)['status'], 'failed')
+
+    def test_spawn_lifecycle_counts_dispatch_once(self):
+        import copy
+        events = self.activation_events()
+        start = {'method': 'item/started', 'params': {'threadId': 'parent', 'item': {
+            'id': 'one-spawn', 'type': 'collabAgentToolCall', 'tool': 'spawnAgent'}}}
+        complete = copy.deepcopy(start)
+        complete['method'] = 'item/completed'
+        blocked = copy.deepcopy(events[-2])
+        blocked['params']['item']['result']['structuredContent']['status'] = 'blocked'
+        events = events[:-1] + [start, blocked, complete]
+        check = lambda stream: runner.assess_observation(
+            self.observation(), {'mechanical': ['activation_before_delegation']}, stream)['status']
+        self.assertEqual(check(events), 'passed')
+        new = copy.deepcopy(start)
+        new['params']['item']['id'] = 'two-spawn'
+        self.assertEqual(check(events + [new]), 'failed')
+        self.assertEqual(check(events + self.activation_events()[:-1] + [new]), 'passed')
+        self.assertEqual(check([start] + self.activation_events()[:-1] + [complete]), 'failed')
+        no_id = copy.deepcopy(start)
+        no_id['params']['item'].pop('id')
+        self.assertEqual(check(events + [no_id]), 'failed')
+        other_thread = copy.deepcopy(start)
+        other_thread['params']['threadId'] = 'other'
+        self.assertEqual(check(self.activation_events()[:-1] + [other_thread, blocked, start]), 'failed')
+
+    def test_raw_spawn_receipts_share_call_id_but_early_call_is_checked(self):
+        import copy
+        events = self.activation_events()
+        raw = {'method': 'rawResponseItem/completed', 'params': {'threadId': 'parent', 'item': {
+            'type': 'function_call', 'name': 'spawnAgent', 'call_id': 'call-1'}}}
+        start = {'method': 'item/started', 'params': {'threadId': 'parent', 'item': {
+            'id': 'item-1', 'call_id': 'call-1', 'type': 'collabAgentToolCall', 'tool': 'spawnAgent'}}}
+        blocked = copy.deepcopy(events[-2])
+        blocked['params']['item']['result']['structuredContent']['status'] = 'blocked'
+        check = lambda stream: runner.assess_observation(
+            self.observation(), {'mechanical': ['activation_before_delegation']}, stream)['status']
+        self.assertEqual(check(events[:-1] + [raw, blocked, start]), 'passed')
+        self.assertEqual(check([raw] + events[:-1] + [start]), 'failed')
 
     def test_conflicting_discovery_digest_is_not_ignored_when_supplied(self):
         import copy

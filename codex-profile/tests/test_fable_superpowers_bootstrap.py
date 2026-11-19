@@ -1,6 +1,7 @@
 """Portable setup tests use an isolated home and fake native catalogue only."""
 import importlib.util
 import json
+import os
 from pathlib import Path
 import shutil
 import sys
@@ -44,6 +45,10 @@ class Backend:
         return result
     def remove(self, plugin):
         self.calls.append(('remove',plugin));self.rows=[x for x in self.rows if x['pluginId']!=plugin]
+        path=self.home/'config.toml'
+        if path.exists():
+            text=path.read_text();stanza='\n[plugins."'+plugin+'"]\nenabled=true\n'
+            if stanza in text:path.write_text(text.replace(stanza,'',1))
     def remove_marketplace(self,name):
         self.calls.append(('unregister',name));self.registries=[x for x in self.registries if x['name']!=name]
     def context(self): return {'codex':'test','fable_version':'1.3.2','validator_hashes':{'test':'1'},'fable_runtime':self.fable_runtime}
@@ -83,6 +88,261 @@ class SetupTests(unittest.TestCase):
         result=self.setup().install();self.assertEqual(result['status'],'installed');self.assertEqual(self.checks,[{'allow_empty_outside':True}])
         self.assertTrue(result['automation']['pending_native_tool']);self.assertEqual((self.root/'maintenance/update.py').read_text(),'runtime')
         self.assertEqual(json.loads(Path(result['automation_request_path']).read_text()),result['automation'])
+    def test_automation_request_write_failure_rolls_back_owned_install(self):
+        setup=self.setup();setup.prepare_catalog(apply=True)
+        self.backend.rows=[{'pluginId':'fable5-codex@gigma-skills','name':'fable5-codex','enabled':True,'version':'1.3.2'},
+            {'pluginId':'other@elsewhere','name':'other','enabled':True}]
+        self.backend.registries=[{'name':'gigma-skills','path':str(self.root)}]
+        self.home.mkdir(exist_ok=True);(self.home/'config.toml').write_text('[unrelated]\nkeep="yes"\n[plugins."fable5-codex@gigma-skills"]\nenabled=true\n')
+        before_rows=self.backend.rows.copy();before_marketplace=setup.marketplace.read_bytes();before_config=(self.home/'config.toml').read_bytes()
+        (setup.state/'automation-request.json').mkdir()
+        result=setup.install()
+        self.assertEqual(result['status'],'rolled_back');self.assertEqual(self.backend.rows,before_rows)
+        self.assertEqual(setup.marketplace.read_bytes(),before_marketplace)
+        self.assertEqual((self.home/'config.toml').read_bytes(),before_config)
+        self.assertFalse(any(row.get('pluginId')=='superpowers@gigma-skills' and row.get('enabled') is True for row in self.backend.rows))
+
+    def test_automation_factory_failure_rolls_back_without_touching_previous_request(self):
+        setup=self.setup();path=setup.state/'automation-request.json';path.parent.mkdir(parents=True);path.write_bytes(b'previous request')
+        with patch('profile_policy.automation_request',side_effect=RuntimeError('factory failed')):
+            result=setup.install()
+        self.assertEqual(result['status'],'rolled_back');self.assertEqual(path.read_bytes(),b'previous request')
+        self.assertFalse(any(row['name']=='superpowers' for row in self.backend.rows))
+
+    def test_final_journal_failure_restores_request_and_retry_rechecks(self):
+        setup=self.setup();path=setup.state/'automation-request.json';path.parent.mkdir(parents=True);path.write_bytes(b'previous request')
+        write=bootstrap.write_json
+        def fail_complete(target,value):
+            if Path(target)==setup.journal and value.get('phase')=='complete':raise OSError('final journal failed')
+            write(target,value)
+        with patch('bootstrap.write_json',side_effect=fail_complete):result=setup.install()
+        self.assertEqual(result['status'],'rolled_back');self.assertEqual(path.read_bytes(),b'previous request')
+        self.assertFalse(any(row['name']=='superpowers' for row in self.backend.rows))
+        self.backend.fable_runtime='changed context'
+        retry=self.setup().install();self.assertEqual(retry['status'],'installed');self.assertEqual(len(self.checks),2)
+        self.assertEqual(json.loads(Path(retry['automation_request_path']).read_text()),retry['automation'])
+
+    def test_final_journal_failure_preserves_concurrent_request_edit(self):
+        setup=self.setup();path=setup.state/'automation-request.json';write=bootstrap.write_json
+        def fail_complete(target,value):
+            if Path(target)==setup.journal and value.get('phase')=='complete':
+                path.write_bytes(b'user edit');raise OSError('final journal failed')
+            write(target,value)
+        with patch('bootstrap.write_json',side_effect=fail_complete):
+            with self.assertRaisesRegex(Exception,'rollback requires attention'):setup.install()
+        self.assertEqual(path.read_bytes(),b'user edit')
+        self.assertEqual(json.loads(setup.journal.read_text())['phase'],'recovery_required')
+
+    def test_final_journal_failure_removes_only_new_request(self):
+        setup=self.setup();path=setup.state/'automation-request.json';write=bootstrap.write_json
+        def fail_complete(target,value):
+            if Path(target)==setup.journal and value.get('phase')=='complete':raise OSError('failed')
+            write(target,value)
+        with patch('bootstrap.write_json',side_effect=fail_complete):result=setup.install()
+        self.assertEqual(result['status'],'rolled_back');self.assertFalse(path.exists())
+        self.assertFalse(any(row['name']=='superpowers' for row in self.backend.rows))
+
+    def test_publication_replacement_preserves_concurrent_edit(self):
+        setup=self.setup();path=setup.state/'automation-request.json';path.parent.mkdir(parents=True);path.write_bytes(b'previous')
+        replace=bootstrap.os.replace;rename=bootstrap.os.rename
+        def race_replace(src,dst):
+            if Path(dst)==path:path.write_bytes(b'concurrent publication edit')
+            return replace(src,dst)
+        def race_rename(src,dst):
+            if Path(src)==path:path.write_bytes(b'concurrent publication edit')
+            return rename(src,dst)
+        with patch('bootstrap.os.replace',side_effect=race_replace), patch('bootstrap.os.rename',side_effect=race_rename):
+            with self.assertRaisesRegex(Exception,'rollback requires attention'):setup.install()
+        self.assertEqual(path.read_bytes(),b'concurrent publication edit')
+
+    def test_publication_withdrawal_interruption_restores_previous_request(self):
+        setup=self.setup();path=setup.state/'automation-request.json';path.parent.mkdir(parents=True);path.write_bytes(b'previous')
+        rename=bootstrap.os.rename
+        def interrupt(src,dst):
+            rename(src,dst)
+            if Path(src)==path:raise KeyboardInterrupt()
+        with patch('bootstrap.os.rename',side_effect=interrupt):
+            with self.assertRaises(KeyboardInterrupt):setup.install()
+        self.assertEqual(self.setup().install()['status'],'recovered')
+        self.assertEqual(path.read_bytes(),b'previous')
+
+    def test_publication_preserves_new_path_created_after_withdrawal(self):
+        setup=self.setup();path=setup.state/'automation-request.json';path.parent.mkdir(parents=True);path.write_bytes(b'previous')
+        rename=bootstrap.os.rename
+        def race(src,dst):
+            rename(src,dst)
+            if Path(src)==path:path.write_bytes(b'new concurrent path')
+        with patch('bootstrap.os.rename',side_effect=race):
+            with self.assertRaisesRegex(Exception,'rollback requires attention'):setup.install()
+        self.assertEqual(path.read_bytes(),b'new concurrent path')
+        self.assertEqual(json.loads(setup.journal.read_text())['phase'],'recovery_required')
+
+    def test_existing_install_publication_preserves_concurrent_edit(self):
+        self.setup().install();setup=self.setup();path=setup.state/'automation-request.json';path.write_bytes(b'previous')
+        replace=bootstrap.os.replace;rename=bootstrap.os.rename
+        def race_replace(src,dst):
+            if Path(dst)==path:path.write_bytes(b'concurrent edit')
+            return replace(src,dst)
+        def race_rename(src,dst):
+            if Path(src)==path:path.write_bytes(b'concurrent edit')
+            return rename(src,dst)
+        with patch('bootstrap.os.replace',side_effect=race_replace), patch('bootstrap.os.rename',side_effect=race_rename):
+            with self.assertRaises(Exception):setup.install()
+        self.assertEqual(path.read_bytes(),b'concurrent edit')
+        self.assertTrue(any(row['name']=='superpowers' for row in self.backend.rows))
+
+    def test_existing_install_resumes_interrupted_request_publication(self):
+        self.setup().install();setup=self.setup();path=setup.state/'automation-request.json';path.write_bytes(b'previous')
+        rename=bootstrap.os.rename
+        def interrupt(src,dst):
+            rename(src,dst)
+            if Path(src)==path:raise KeyboardInterrupt()
+        with patch('bootstrap.os.rename',side_effect=interrupt):
+            with self.assertRaises(KeyboardInterrupt):setup.install()
+        self.assertFalse(path.exists())
+        result=self.setup().install();self.assertEqual(result['status'],'unchanged')
+        self.assertEqual(json.loads(path.read_text()),result['automation'])
+        self.assertTrue(any(row['name']=='superpowers' for row in self.backend.rows))
+
+    def test_request_deletion_race_preserves_concurrent_edit(self):
+        setup=self.setup();path=setup.state/'automation-request.json';write=bootstrap.write_json;unlink=Path.unlink;rename=bootstrap.os.rename
+        def fail_complete(target,value):
+            if Path(target)==setup.journal and value.get('phase')=='complete':raise OSError('failed')
+            write(target,value)
+        def racing_unlink(target,*args,**kwargs):
+            if target==path:path.write_bytes(b'concurrent edit')
+            return unlink(target,*args,**kwargs)
+        def racing_rename(src,dst):
+            if Path(src)==path:path.write_bytes(b'concurrent edit')
+            return rename(src,dst)
+        with patch('bootstrap.write_json',side_effect=fail_complete), patch.object(Path,'unlink',racing_unlink), patch('bootstrap.os.rename',side_effect=racing_rename):
+            with self.assertRaisesRegex(Exception,'rollback requires attention'):setup.install()
+        self.assertEqual(path.read_bytes(),b'concurrent edit')
+
+    def test_request_restoration_race_preserves_concurrent_edit(self):
+        setup=self.setup();path=setup.state/'automation-request.json';path.parent.mkdir(parents=True);path.write_bytes(b'previous')
+        write=bootstrap.write_json;replace=bootstrap.os.replace;rename=bootstrap.os.rename;recovering=[]
+        def fail_complete(target,value):
+            if Path(target)==setup.journal and value.get('phase')=='complete':
+                recovering.append(True);raise OSError('failed')
+            write(target,value)
+        def racing_replace(src,dst):
+            if recovering and Path(dst)==path:path.write_bytes(b'concurrent edit')
+            return replace(src,dst)
+        def racing_rename(src,dst):
+            if recovering and Path(src)==path:path.write_bytes(b'concurrent edit')
+            return rename(src,dst)
+        with patch('bootstrap.write_json',side_effect=fail_complete), patch('bootstrap.os.replace',side_effect=racing_replace), patch('bootstrap.os.rename',side_effect=racing_rename):
+            with self.assertRaisesRegex(Exception,'rollback requires attention'):setup.install()
+        self.assertEqual(path.read_bytes(),b'concurrent edit')
+
+    def test_request_withdrawal_interruption_resumes_from_backup(self):
+        setup=self.setup();path=setup.state/'automation-request.json';path.parent.mkdir(parents=True);path.write_bytes(b'previous')
+        write=bootstrap.write_json;rename=bootstrap.os.rename
+        def fail_complete(target,value):
+            if Path(target)==setup.journal and value.get('phase')=='complete':raise OSError('failed')
+            write(target,value)
+        def interrupt(src,dst):
+            rename(src,dst)
+            if Path(src)==path:raise KeyboardInterrupt()
+        with patch('bootstrap.write_json',side_effect=fail_complete), patch('bootstrap.os.rename',side_effect=interrupt):
+            with self.assertRaises(KeyboardInterrupt):setup.install()
+        self.assertFalse(path.exists())
+        self.assertEqual(self.setup().install()['status'],'recovered')
+        self.assertEqual(path.read_bytes(),b'previous')
+
+    def test_request_appearing_after_withdrawal_is_preserved(self):
+        setup=self.setup();path=setup.state/'automation-request.json';path.parent.mkdir(parents=True);path.write_bytes(b'previous')
+        write=bootstrap.write_json;create=bootstrap.create_owned;recovering=[]
+        def fail_complete(target,value):
+            if Path(target)==setup.journal and value.get('phase')=='complete':recovering.append(True);raise OSError('failed')
+            write(target,value)
+        def race(target,data):
+            if recovering and Path(target)==path:path.write_bytes(b'concurrent creation')
+            create(target,data)
+        with patch('bootstrap.write_json',side_effect=fail_complete), patch('bootstrap.create_owned',side_effect=race):
+            with self.assertRaisesRegex(Exception,'rollback requires attention'):setup.install()
+        self.assertEqual(path.read_bytes(),b'concurrent creation')
+        journal=json.loads(setup.journal.read_text());backup=setup.state/journal['automation_request']['recovery_backup']
+        self.assertTrue(backup.is_file())
+
+    def test_interrupted_unconfirmed_request_is_preserved_for_recovery(self):
+        setup=self.setup();path=setup.state/'automation-request.json';publish=bootstrap.create_owned
+        def interrupt(target,data):
+            publish(target,data)
+            if Path(target)==path:raise KeyboardInterrupt()
+        with patch('bootstrap.create_owned',side_effect=interrupt):
+            with self.assertRaises(KeyboardInterrupt):setup.install()
+        before=path.read_bytes()
+        with self.assertRaisesRegex(Conflict,'unconfirmed'):self.setup().install()
+        self.assertEqual(path.read_bytes(),before);self.assertTrue(any(row['name']=='superpowers' for row in self.backend.rows))
+
+    def test_complete_write_then_error_does_not_reclassify_completed_install(self):
+        setup=self.setup();write=bootstrap.write_json
+        def fail_after_complete(target,value):
+            write(target,value)
+            if Path(target)==setup.journal and value.get('phase')=='complete':raise OSError('after write')
+        with patch('bootstrap.write_json',side_effect=fail_after_complete):
+            with self.assertRaisesRegex(Exception,'rollback requires attention'):setup.install()
+        self.assertEqual(json.loads(setup.journal.read_text())['phase'],'complete')
+        self.assertEqual(self.setup().install()['status'],'unchanged')
+        self.assertNotIn(('remove','superpowers@gigma-skills'),self.backend.calls)
+
+    def test_rollback_preserves_preexisting_enabled_setting_before_removal(self):
+        setup=self.setup();self.home.mkdir(parents=True)
+        config=self.home/'config.toml';config.write_text('[unrelated]\nkeep="yes"\n[plugins."superpowers@gigma-skills"]\nenabled=true\n')
+        before=config.read_bytes();(setup.state/'automation-request.json').mkdir(parents=True)
+        with self.assertRaisesRegex(Exception,'rollback requires attention'):setup.install()
+        self.assertEqual(config.read_bytes(),before+'\n[plugins."fable5-codex@gigma-skills"]\nenabled=true\n'.replace('\n',os.linesep).encode())
+        self.assertEqual(bootstrap.settings(self.home)['plugins']['superpowers@gigma-skills'],{'enabled':True})
+        self.assertNotIn(('remove','superpowers@gigma-skills'),self.backend.calls)
+        self.assertTrue(any(row['name']=='superpowers' for row in self.backend.rows))
+        self.assertEqual(json.loads(setup.journal.read_text())['phase'],'recovery_required')
+
+    def test_rollback_preserves_concurrently_extended_plugin_setting(self):
+        setup=self.setup();(setup.state/'automation-request.json').mkdir(parents=True)
+        def extend(point):
+            if point=='after_install':
+                path=self.home/'config.toml';path.write_text(path.read_text()+'user_choice="keep"\n')
+        setup.failpoint=extend
+        with self.assertRaisesRegex(Exception,'rollback requires attention'):setup.install()
+        self.assertEqual(bootstrap.settings(self.home)['plugins']['superpowers@gigma-skills']['user_choice'],'keep')
+        self.assertNotIn(('remove','superpowers@gigma-skills'),self.backend.calls)
+        self.assertEqual(json.loads(setup.journal.read_text())['phase'],'recovery_required')
+
+    def test_legacy_recovery_without_setting_snapshot_preserves_plugin(self):
+        def interrupt(point):
+            if point=='after_install':raise KeyboardInterrupt()
+        setup=self.setup(failpoint=interrupt)
+        with self.assertRaises(KeyboardInterrupt):setup.install()
+        journal=json.loads(setup.journal.read_text());journal.pop('old_plugin_setting');write_json(setup.journal,journal)
+        before=(self.home/'config.toml').read_bytes()
+        with self.assertRaisesRegex(Conflict,'setting cannot be safely removed'):self.setup().install()
+        self.assertEqual((self.home/'config.toml').read_bytes(),before)
+        self.assertNotIn(('remove','superpowers@gigma-skills'),self.backend.calls)
+
+    def test_unconfirmed_native_removal_is_not_reported_as_rollback(self):
+        setup=self.setup();(setup.state/'automation-request.json').mkdir(parents=True)
+        with patch.object(self.backend,'remove',return_value=None):
+            with self.assertRaisesRegex(Exception,'rollback requires attention'):setup.install()
+        self.assertTrue(any(row['name']=='superpowers' for row in self.backend.rows))
+        self.assertEqual(json.loads(setup.journal.read_text())['phase'],'recovery_required')
+
+    def test_unrestored_native_setting_is_not_reported_as_rollback(self):
+        setup=self.setup();(setup.state/'automation-request.json').mkdir(parents=True)
+        def remove_row_only(plugin):
+            self.backend.rows=[row for row in self.backend.rows if row['pluginId']!=plugin]
+        with patch.object(self.backend,'remove',side_effect=remove_row_only):
+            with self.assertRaisesRegex(Exception,'rollback requires attention'):setup.install()
+        self.assertIn('superpowers@gigma-skills',bootstrap.settings(self.home)['plugins'])
+        self.assertEqual(json.loads(setup.journal.read_text())['phase'],'recovery_required')
+
+    def test_existing_install_request_failure_keeps_plugin(self):
+        self.setup().install();path=self.root/'updates/automation-request.json';path.unlink();path.mkdir()
+        with self.assertRaises(Exception):self.setup().install()
+        self.assertTrue(any(row['name']=='superpowers' for row in self.backend.rows))
+        self.assertNotIn(('remove','superpowers@gigma-skills'),self.backend.calls)
+
     def test_repeat_reuses_context_and_preserves_unrelated_settings(self):
         self.home.mkdir();(self.home/'config.toml').write_text('[unrelated]\nkeep="yes"\n')
         self.setup().install();before=(self.home/'config.toml').read_bytes()
@@ -260,6 +520,7 @@ class SetupTests(unittest.TestCase):
         self.backend.health=health
         result=self.setup().install()
         self.assertEqual(result['status'],'rolled_back');self.assertIn('late edit',(self.home/'config.toml').read_text())
+        self.assertNotIn('superpowers@gigma-skills',(self.home/'config.toml').read_text())
         self.assertEqual((self.home/'AGENTS.md').read_text(),'user edited instructions')
 
     def test_full_gigma_catalog_is_preserved_and_registered_before_fable(self):

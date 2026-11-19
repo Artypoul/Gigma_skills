@@ -499,13 +499,24 @@ def payload(item):
 def activation_order(native, events):
     """Verify native receipts, never an assistant's claim that Fable is ready."""
     items = event_items(events, native.get('thread_id'))
-    starts = [line for line, item in items if
-              (item.get('type') == 'subAgentActivity' and item.get('kind') == 'started')
-              or (item.get('type') == 'collabAgentToolCall' and item.get('tool') in {'spawnAgent', 'spawn_agent'})
-              or (item.get('type') in {'function_call', 'custom_tool_call'} and re.search(r'(?:^|[.:/])(?:spawn_agent|spawnAgent)$', item.get('name', '')))]
+    starts, seen_calls = set(), set()
+    for line, item in items:
+        is_spawn = ((item.get('type') == 'subAgentActivity' and item.get('kind') == 'started')
+                    or (item.get('type') == 'collabAgentToolCall' and item.get('tool') in {'spawnAgent', 'spawn_agent'})
+                    or (item.get('type') in {'function_call', 'custom_tool_call'} and re.search(r'(?:^|[.:/])(?:spawn_agent|spawnAgent)$', item.get('name', ''))))
+        if not is_spawn:
+            continue
+        # Count the earliest observed receipt for an invocation, including raw
+        # calls. Missing IDs are never evidence that two events are the same.
+        keys = {(key, item[key]) for key in ('id', 'call_id', 'callId')
+                if isinstance(item.get(key), str) and item[key]}
+        # Normalize the two spellings of call IDs.
+        keys = {('call_id' if key == 'callId' else key, value) for key, value in keys}
+        if not keys or not keys.intersection(seen_calls):
+            starts.add(line)
+        seen_calls.update(keys)
     if not starts:
         return verdict('not_checked', 'No native delegation event observed')
-    cutoff = min(starts)
     def same_cwd(value):
         return (isinstance(value, str) and bool(value.strip()) and Path(value).is_absolute()
                 and Path(value).resolve() == Path(native['cwd']).resolve())
@@ -515,38 +526,13 @@ def activation_order(native, events):
                 and all(isinstance(skill.get(k), str) and skill[k].strip() for k in ('id', 'name', 'path', 'plugin_id'))
                 and isinstance(skill.get('sha256'), str) and re.fullmatch(r'[a-f0-9]{64}', skill['sha256']))
 
-    searches, reads, ready = [], [], []
-    for line, item in items:
-        if item.get('type') != 'mcpToolCall' or line >= cutoff:
-            continue
-        tool = item.get('tool', '').replace('-', '_')
-        if tool not in {'search_skills', 'read_skill', 'fable_status'}:
-            continue
-        if 'fable' not in item.get('server', '').lower():
-            continue
-        args = item.get('arguments') or {}
-        if isinstance(args, str):
-            try:
-                args = json.loads(args)
-            except ValueError:
-                continue
-        if not isinstance(args, dict) or not same_cwd(args.get('cwd')):
-            continue
-        value = payload(item)
-        if item.get('status') not in {'completed', 'success'} or value.get('partial') is not False or value.get('warning_count') != 0:
-            continue
-        if tool == 'search_skills':
-            searches.append((line, value))
-        elif tool == 'read_skill':
-            reads.append((line, value))
-        elif value.get('status') == 'ready' and same_cwd(value.get('cwd')):
-            ready.append((line, value))
-    for line, state in ready:
+    searches, reads = [], []
+    def complete_activation(line, state):
         selected = state.get('skills', {})
         if (not isinstance(selected, dict)
                 or not all(key in selected for key in ('fable', 'using_superpowers', 'writing_plans'))
                 or not all(identity(skill) for skill in selected.values())):
-            continue
+            return False
         complete = True
         for skill in selected.values():
             discovered = [n for n, value in searches if n < line and value.get('catalog_sha256') == state.get('catalog_sha256')
@@ -574,8 +560,97 @@ def activation_order(native, events):
                 complete = False
                 break
         if complete and re.fullmatch(r'[a-f0-9]{64}', state.get('catalog_sha256', '')):
-            return verdict('satisfied', f'Complete matching discovery/read/ready receipts precede delegation at event {cutoff}')
-    return verdict('violated', 'Delegation occurred before complete matching activation evidence')
+            return True
+        return False
+
+    active = False
+    selected = {}
+    catalog = None
+
+    def conflicting_skill(left, right):
+        if not isinstance(left, dict) or not isinstance(right, dict):
+            return False
+        if not left.get('id') or left.get('id') != right.get('id'):
+            return False
+        return any(left.get(k) is not None and right.get(k) is not None and left[k] != right[k]
+                   for k in ('id', 'name', 'path', 'plugin_id', 'sha256'))
+    for line, item in items:
+        if line in starts:
+            if not active:
+                return verdict('violated', f'Delegation at event {line} lacked current complete activation evidence')
+            continue
+        if (events[line - 1].get('method') != 'item/completed' or item.get('type') != 'mcpToolCall'
+                or item.get('tool', '').replace('-', '_') not in {'search_skills', 'read_skill', 'fable_status'}):
+            continue
+        if 'fable' not in item.get('server', '').lower():
+            continue
+        args = item.get('arguments') or {}
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except ValueError:
+                continue
+        if not isinstance(args, dict) or not same_cwd(args.get('cwd')):
+            continue
+        tool = item.get('tool', '').replace('-', '_')
+        value = payload(item)
+        if item.get('status') not in {'completed', 'success'} or value.get('partial') is not False or value.get('warning_count') != 0:
+            searches, reads, active, selected, catalog = [], [], False, {}, None
+            continue
+        if tool == 'fable_status':
+            candidate = value.get('skills', {})
+            if value.get('status') != 'ready' or not same_cwd(value.get('cwd')):
+                searches, reads, active, selected, catalog = [], [], False, {}, None
+            elif active and candidate != selected:
+                searches, reads, active, selected, catalog = [], [], False, {}, None
+            else:
+                active = complete_activation(line, value)
+                selected = candidate if active else {}
+                if not active:
+                    searches, reads, catalog = [], [], None
+        else:
+            known = list(selected.values())
+            known.extend(skill for _, receipt in searches for skill in receipt.get('skills', [])
+                         if isinstance(skill, dict))
+            known.extend(receipt.get('skill', {}) for _, receipt in reads)
+            if tool == 'search_skills':
+                found = value.get('skills', [])
+                new_catalog = value.get('catalog_sha256')
+                if (not isinstance(found, list) or not isinstance(new_catalog, str)
+                        or not re.fullmatch(r'[a-f0-9]{64}', new_catalog)):
+                    searches, reads, active, selected, catalog = [], [], False, {}, None
+                    continue
+                if ((catalog is not None and new_catalog != catalog)
+                        or any(conflicting_skill(skill, previous) for skill in found for previous in known)):
+                    searches, reads, active, selected = [], [], False, {}
+                catalog = new_catalog
+                searches.append((line, value))
+            else:
+                skill = value.get('skill', {})
+                observed = {**skill, 'sha256': value.get('sha256')} if isinstance(skill, dict) else {}
+                offset, content = value.get('offset'), value.get('content')
+                conflict = any(conflicting_skill(observed, previous) for previous in known)
+                for _, previous in reads:
+                    prior_skill = previous.get('skill', {})
+                    if (not isinstance(prior_skill, dict) or not isinstance(skill, dict)
+                            or not all(skill.get(k) == prior_skill.get(k) for k in ('id', 'name', 'path', 'plugin_id'))):
+                        continue
+                    prior_offset, prior_content = previous.get('offset'), previous.get('content')
+                    if (not isinstance(offset, int) or not isinstance(prior_offset, int)
+                            or not isinstance(content, str) or not isinstance(prior_content, str)):
+                        conflict = True
+                        break
+                    start = max(offset, prior_offset)
+                    end = min(offset + len(content), prior_offset + len(prior_content))
+                    if (value.get('total_chars') != previous.get('total_chars')
+                            or (start < end and content[start - offset:end - offset]
+                                != prior_content[start - prior_offset:end - prior_offset])):
+                        conflict = True
+                        break
+                if conflict:
+                    searches, reads, active, selected, catalog = [], [], False, {}, None
+                reads.append((line, value))
+    return verdict('satisfied', 'Complete matching activation receipts precede every delegation')
 
 
 def assess_observation(native, criteria, events, semantic=None):

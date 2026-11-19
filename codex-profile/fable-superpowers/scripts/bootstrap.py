@@ -305,6 +305,20 @@ class Setup:
         if current.hex() not in [value['old_marketplace_hex'],value['new_marketplace_hex']]:raise Conflict('Marketplace changed after interrupted setup; recovery preserves it.')
         if value.get('source') and inventory(value['source'])!=value['inventory']:
             raise Conflict('Managed source changed after interrupted setup; recovery preserves it.')
+        request=value.get('automation_request')
+        if request:
+            path=self.state/'automation-request.json'
+            if path.is_symlink():raise Conflict('Automation request changed; recovery preserves it.')
+            self.recover_request_publication(request)
+            current_request=path.read_bytes() if path.exists() else None
+            old_request=bytes.fromhex(request['old_hex']) if request['old_hex'] is not None else None
+            new_request=bytes.fromhex(request['new_hex'])
+            backup_name=request.get('recovery_backup')
+            if backup_name and not re.fullmatch(r'automation-recovery-[0-9a-f]{32}\.json',backup_name):
+                raise Conflict('Invalid automation recovery backup; it is preserved.')
+            backup=self.state/backup_name if backup_name else None
+            if not (backup and (backup.exists() or backup.is_symlink())) and current_request!=old_request and (current_request!=new_request or not request.get('published')):
+                raise Conflict('Automation request changed or publication is unconfirmed; recovery preserves it.')
         rows=[x for x in self.backend.installed() if x.get('pluginId')==PLUGIN]
         if rows:
             if len(rows)!=1:raise Conflict('Ambiguous installed Superpowers state; recovery preserves it.')
@@ -325,8 +339,35 @@ class Setup:
             if not cache.is_dir() or inventory(cache)!=value['inventory']:
                 raise Conflict('Installed Superpowers cache changed or cannot be identified; recovery preserves it.')
             if value.get('installed_row') and row!=value['installed_row']:raise Conflict('Installed Superpowers state changed; recovery preserves it.')
+            old_setting=value.get('old_plugin_setting');current_plugins=settings(self.home).get('plugins',{})
+            if (not old_setting or old_setting['present'] or
+                (PLUGIN in current_plugins and current_plugins[PLUGIN]!={'enabled':True})):
+                raise Conflict('Superpowers setting cannot be safely removed; it is preserved for recovery.')
             # Only this newly created plugin is removed. Other settings are never restored wholesale.
             self.backend.remove(PLUGIN)
+        if any(row.get('pluginId')==PLUGIN for row in self.backend.installed()):
+            raise Conflict('Native plugin removal could not be confirmed.')
+        if 'old_plugin_setting' in value:
+            old_setting=value['old_plugin_setting'];current_plugins=settings(self.home).get('plugins',{})
+            if old_setting['present']!=(PLUGIN in current_plugins) or (old_setting['present'] and old_setting['value']!=current_plugins[PLUGIN]):
+                raise Conflict('Superpowers setting was not restored; it is preserved for recovery.')
+        if request and (current_request!=old_request or (backup and (backup.exists() or backup.is_symlink()))):
+            if not backup:
+                backup=self.state/('automation-recovery-'+uuid.uuid4().hex+'.json')
+                request['recovery_backup']=backup.name
+                write_json(self.journal,value)
+            if not backup.exists() and not backup.is_symlink():
+                os.rename(path,backup)
+            if backup.is_symlink() or not backup.is_file():
+                raise Conflict('Automation recovery backup is not a regular file; it is preserved.')
+            captured=backup.read_bytes()
+            if captured!=new_request:
+                if not path.exists() and not path.is_symlink():create_owned(path,captured)
+                raise Conflict('Automation request changed during withdrawal; both versions are preserved.')
+            current_request=path.read_bytes() if path.exists() and not path.is_symlink() else None
+            if path.is_symlink() or (path.exists() and current_request!=old_request):
+                raise Conflict('Automation request appeared during recovery; both versions are preserved.')
+            if old_request is not None and not path.exists():create_owned(path,old_request)
         old=bytes.fromhex(value['old_marketplace_hex'])
         if current!=old:atomic_write(self.marketplace,old,expected=current)
         write_json(self.state/'marketplace-owned.json',{'schema':1,'manifest_hex':old.hex(),'source_root':str(self.catalog)})
@@ -337,9 +378,55 @@ class Setup:
         return {'backend':deepcopy(self.backend.context()),'package':inventory(path),'policy':digest(self.home/'AGENTS.md'),
             'settings':settings(self.home),'source':str(Path(path).resolve())}
 
-    def automation(self,factory):
-        request=factory(self.home,self.root);path=self.state/'automation-request.json'
-        write_json(path,request)
+    def recover_request_publication(self,request):
+        name=request.get('publication_backup')
+        if not name:return
+        if not re.fullmatch(r'automation-publication-[0-9a-f]{32}\.json',name):
+            raise Conflict('Invalid automation publication backup; it is preserved.')
+        path=self.state/'automation-request.json';backup=self.state/name
+        if not backup.exists() and not backup.is_symlink():return
+        if backup.is_symlink() or not backup.is_file():raise Conflict('Automation publication backup is not a regular file.')
+        captured=backup.read_bytes();old=bytes.fromhex(request['old_hex'])
+        if captured!=old:
+            if not path.exists() and not path.is_symlink():create_owned(path,captured)
+            raise Conflict('Automation request changed during publication; it is preserved.')
+        if not request.get('published') and not path.exists() and not path.is_symlink():create_owned(path,old)
+
+    def automation(self,factory,transaction=None):
+        path=self.state/'automation-request.json';standalone=self.state/'automation-transaction.json'
+        if standalone.exists():
+            pending=json.loads(standalone.read_text())
+            if pending.get('phase')=='prepared':
+                previous=pending['automation_request'];self.recover_request_publication(previous)
+                old=bytes.fromhex(previous['old_hex']) if previous['old_hex'] is not None else None
+                current=path.read_bytes() if path.exists() and not path.is_symlink() else None
+                if path.is_symlink() or current!=old:raise Conflict('Pending automation publication needs attention; request is preserved.')
+                pending['phase']='rolled_back';write_json(standalone,pending)
+        request=factory(self.home,self.root)
+        if path.is_symlink():raise Conflict('Automation request is a symbolic link.')
+        old=path.read_bytes() if path.exists() else None
+        new=(json.dumps(request,ensure_ascii=False,indent=2)+'\n').encode()
+        if transaction is None:
+            transaction={'phase':'prepared'};journal=standalone
+        else:journal=self.journal
+        details={'old_hex':old.hex() if old is not None else None,'new_hex':new.hex()}
+        transaction['automation_request']=details
+        if old!=new and old is not None:details['publication_backup']='automation-publication-'+uuid.uuid4().hex+'.json'
+        write_json(journal,transaction)
+        if old!=new:
+            if old is not None:
+                backup=self.state/details['publication_backup']
+                os.rename(path,backup)
+                if backup.is_symlink() or not backup.is_file():raise Conflict('Automation publication backup is not a regular file.')
+                captured=backup.read_bytes()
+                if captured!=old:
+                    if not path.exists() and not path.is_symlink():create_owned(path,captured)
+                    raise Conflict('Automation request changed during publication; it is preserved.')
+            create_owned(path,new)
+            details['published']=True
+            if journal==self.journal:write_json(journal,transaction)
+        if journal==standalone:
+            transaction['phase']='complete';write_json(journal,transaction)
         return {'automation':request,'automation_request_path':str(path)}
 
     def install(self):
@@ -395,7 +482,10 @@ class Setup:
             manifest=json.loads(old_marketplace.decode('utf-8-sig'))
             next(x for x in manifest['plugins'] if x['name']=='superpowers')['source']={'source':'local','path':'./'+destination.relative_to(self.root).as_posix()}
             encoded=(json.dumps(manifest,ensure_ascii=False,indent=2)+'\n').encode()
-            transaction={'phase':'activating','owns_new_plugin':True,'version':candidate['version'],'source':str(destination),'inventory':files,
+            old_plugins=before.get('plugins',{})
+            old_setting={'present':PLUGIN in old_plugins}
+            if old_setting['present']:old_setting['value']=old_plugins[PLUGIN]
+            transaction={'phase':'activating','owns_new_plugin':True,'old_plugin_setting':old_setting,'version':candidate['version'],'source':str(destination),'inventory':files,
                 'old_marketplace_hex':old_marketplace.hex(),'new_marketplace_hex':encoded.hex(),'verification_context':verified_backend}
             write_json(self.journal,transaction)
             try:
@@ -418,13 +508,18 @@ class Setup:
                 if context['backend']!=verified_backend or context['package']!=files:raise Conflict('Verification context changed before completion.')
                 write_json(self.state/'bootstrap-verified.json',{'context':context,'checks':checks,'candidate':candidate})
                 write_json(self.state/'marketplace-owned.json',{'schema':1,'manifest_hex':encoded.hex(),'source_root':str(self.catalog)})
+                result={'status':'installed','version':candidate['version'],'checks':checks,'health':health,'policy':policy,'runtime':runtime,
+                    **self.automation(automation_request,transaction)}
                 transaction.update(phase='complete',health=health);write_json(self.journal,transaction)
-                return {'status':'installed','version':candidate['version'],'checks':checks,'health':health,'policy':policy,'runtime':runtime,
-                    **self.automation(automation_request)}
+                return result
             except Exception as error:
-                try:self.recover()
+                try:
+                    recovered=self.recover()
+                    if not recovered:raise Conflict('No recoverable bootstrap transaction was found.')
                 except Exception as recovery_error:
-                    transaction.update(phase='recovery_required',error=str(error),recovery_error=str(recovery_error));write_json(self.journal,transaction)
+                    recorded=json.loads(self.journal.read_text()) if self.journal.exists() else {}
+                    if recorded.get('phase') in {'activating','installed','recovery_required'}:
+                        recorded.update(phase='recovery_required',error=str(error),recovery_error=str(recovery_error));write_json(self.journal,recorded)
                     raise UpdateError('Bootstrap rollback requires attention; unrelated changes were preserved.') from recovery_error
                 return {'status':'rolled_back','reason':str(error)}
 
