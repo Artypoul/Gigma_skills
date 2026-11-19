@@ -16,6 +16,7 @@
 # зации, её можно принять молча.
 set -euo pipefail
 cd "$(dirname "$0")"
+source scripts/sync-cache-filter.sh
 
 dest="${CLAUDE_HOME:-$HOME/.claude}"
 plugins=()
@@ -64,15 +65,15 @@ is_ref_managed() { grep -Fxq "$1" "$ref_manifest"; }
 is_adopted()     { for a in ${adopt+"${adopt[@]}"}; do [ "$a" = "$1" ] && return 0; done; return 1; }
 in_canon()       { for c in ${canon_all+"${canon_all[@]}"}; do [ "$c" = "$1" ] && return 0; done; return 1; }
 
-file_list() { (cd "$1" && find . -type f -not -path '*/__pycache__/*' | sort); }
+file_list() { (cd "$1" && find . -type d \( -name __pycache__ -o -name .gitlab-ci-local \) -prune -o -type f ! -name '*.pyc' ! -name '*.pyo' -print | sort); }
 
 # Неуправляемую копию можно принять только при полном совпадении файлов.
 looks_like_our_copy() {
   local canon="$1" target="$2" rel
   [ ! -L "$target" ] && [ -f "$target/SKILL.md" ] || return 1
   # Non-regular entries cannot be proven identical by the regular-file comparison.
-  [ -z "$(find "$target" -type d -name __pycache__ -prune -o \( ! -type d ! -type f -print -quit \))" ] || return 1
-  [ -z "$(find "$canon" -type d -name __pycache__ -prune -o \( ! -type d ! -type f -print -quit \))" ] || return 1
+  [ -z "$(find "$target" \( ! -type d ! -type f -print -quit \))" ] || return 1
+  [ -z "$(find "$canon" \( ! -type d ! -type f -print -quit \))" ] || return 1
   [ "$(file_list "$canon")" = "$(file_list "$target")" ] || return 1
   while IFS= read -r rel; do
     cmp -s "$canon/$rel" "$target/$rel" || return 1
@@ -101,9 +102,7 @@ for name in "${plugins[@]}"; do
 
       # Пересоздаём скил целиком, чтобы не оставлять файлы, удалённые в каноне.
       rm -rf "$target"
-      cp -r "$skill" "$target"
-      # Артефакты сборки Python на стороне Claude не нужны.
-      find "$target" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
+      copy_filtered_tree "$skill" "$target"
       synced+=("$skill_name")
     done
   fi
@@ -125,7 +124,7 @@ for name in "${plugins[@]}"; do
       cp "$src" "$dst"
       echo "$rel" >> "$ref_manifest"
       copied_refs=$((copied_refs + 1))
-    done < <(cd "$plugin/reference" && find . -type f | sort)
+    done < <(cd "$plugin/reference" && find . -type d \( -name __pycache__ -o -name .gitlab-ci-local \) -prune -o -type f ! -name '*.pyc' ! -name '*.pyo' -print | sort)
   fi
 done
 

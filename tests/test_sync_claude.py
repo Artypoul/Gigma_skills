@@ -103,6 +103,18 @@ class ClaudeSyncTests(unittest.TestCase):
                 self.assertNotIn('vps-connect', self.managed_names())
                 self.assertIn('vps-connect', completed.stdout + completed.stderr)
 
+    def test_unmanaged_copy_with_symlink_in_cache_is_preserved(self):
+        self.skill.parent.mkdir(parents=True)
+        shutil.copytree(CANON, self.skill, ignore=shutil.ignore_patterns('__pycache__'))
+        cache = self.skill / '.gitlab-ci-local'
+        cache.mkdir()
+        link = cache / 'private-link'
+        self.symlink(link, Path(self.temp.name) / 'missing')
+        completed = self.sync('--plugin', 'vps-support')
+        self.assertEqual(completed.returncode, 3)
+        self.assertTrue(link.is_symlink())
+        self.assertNotIn('vps-connect', self.managed_names())
+
     def test_unmanaged_broken_skill_symlink_is_preserved(self):
         self.skill.parent.mkdir(parents=True)
         self.symlink(self.skill, Path(self.temp.name) / 'missing')

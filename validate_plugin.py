@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parent
 PLUGIN_DIR = ROOT / "plugins"
 CODEX_SKILLS = ROOT / ".codex" / "skills"
 CODEX_REFERENCE = ROOT / ".codex" / "reference"
-IGNORED_GENERATED_DIRS = {"__pycache__"}
+IGNORED_GENERATED_DIRS = {"__pycache__", ".gitlab-ci-local"}
 IGNORED_GENERATED_SUFFIXES = {".pyc", ".pyo"}
 
 

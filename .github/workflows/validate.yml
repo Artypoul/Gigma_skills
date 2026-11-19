@@ -95,3 +95,31 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./plugins/first-pass-quality/tests/run-hook-config-smoke.ps1
+
+  windows-marketplace-acceptance:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout exact candidate with complete history
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install pinned Codex CLI
+        run: npm install --global @openai/codex@0.167.1
+
+      - name: Exercise real marketplace add and refresh
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          WINDOWS_MARKETPLACE_ACCEPTANCE: "1"
+        run: python -B scripts/windows-marketplace-acceptance.py
