@@ -68,6 +68,11 @@ jobs:
       - name: Test portable bootstrap, policy and profile
         run: python -B -m unittest discover -s codex-profile/tests -p "test_fable_superpowers_*.py"
 
+      - name: Test real Standard profile installation and ownership
+        env:
+          REQUIRE_STANDARD_PROFILE_PWSH: "1"
+        run: python -B -m unittest discover -s codex-profile/tests -p "test_standard_profile.py" -v
+
       - name: Test task acceptance evidence and negative cases
         run: python -B -m unittest discover -s codex-profile/tests -p "test_agent_acceptance_eval.py"
 
