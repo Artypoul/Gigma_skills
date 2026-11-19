@@ -82,6 +82,30 @@ class SetupTests(unittest.TestCase):
         return {'status':'passed','cases':{str(i):{'passed':True} for i in range(5)}}
     def setup(self,**kw):
         return Setup(self.home,backend=self.backend,marketplace_root=self.catalog,runtime_source=self.runtime,policy_source=self.policy,requirements=lambda:{'status':'passed'},latest=lambda:{'version':'7.0.2'},stage=self.stage,compatibility=kw.pop('compatibility',self.compat),**kw)
+    def test_existing_install_refuses_catalog_source_migration_before_writes(self):
+        setup=self.setup();self.assertEqual(setup.install()['status'],'installed')
+        for path in [self.catalog/'external-plugins.lock.json',self.catalog/'.agents/plugins/marketplace.json']:
+            value=json.loads(path.read_text());next(x for x in value['plugins'] if x['name']=='superpowers')['source']['url']='https://github.com/Artypoul/superpowers.git'
+            write_json(path,value)
+        before={p.relative_to(self.home):p.read_bytes() for p in self.home.rglob('*') if p.is_file()}
+        calls=list(self.backend.calls);checks=list(self.checks)
+        with self.assertRaisesRegex(Conflict,'source|migration'):
+            self.setup().install()
+        after={p.relative_to(self.home):p.read_bytes() for p in self.home.rglob('*') if p.is_file()}
+        self.assertEqual(after,before)
+        self.assertEqual(self.backend.calls,calls);self.assertEqual(self.checks,checks)
+
+    def test_existing_validation_rechecks_source_before_accepting_compatibility(self):
+        setup=self.setup();self.assertEqual(setup.install()['status'],'installed')
+        (setup.state/'bootstrap-verified.json').unlink()
+        provenance=self.root/'provenance.json'
+        def mutate(*args,**kwargs):
+            value=json.loads(provenance.read_text());value['origin']['repo']='other/superpowers';write_json(provenance,value)
+            return {'status':'passed'}
+        with self.assertRaisesRegex(Conflict,'source|provenance'):
+            self.setup(compatibility=mutate).install()
+        self.assertFalse((setup.state/'bootstrap-verified.json').exists())
+
     def test_plan_is_read_only_for_fresh_home(self):
         result=self.setup().plan();self.assertEqual(result['status'],'planned');self.assertFalse(self.home.exists());self.assertEqual(self.backend.calls,[])
     def test_fresh_custom_home_verifies_before_activation_and_returns_schedule(self):

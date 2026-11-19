@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import stat
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 import zipfile
@@ -38,12 +39,83 @@ class VersionTests(unittest.TestCase):
     def test_latest_uses_only_stable_release_and_fixed_public_api(self):
         response = {'tag_name': 'v7.0.2', 'prerelease': False, 'draft': False, 'published_at': '2026-11-03T22:17:54Z', 'html_url': 'https://github.com/obra/superpowers/releases/tag/v7.0.2', 'id': 123}
         with patch.object(source, '_get_json', return_value=response) as get:
-            result = source.latest_release()
+            result = source.latest_release('Artypoul/superpowers')
         self.assertEqual(result['version'], '7.0.2')
-        get.assert_called_once_with('https://api.github.com/repos/obra/superpowers/releases/latest')
+        get.assert_called_once_with('https://api.github.com/repos/Artypoul/superpowers/releases/latest')
         response['prerelease'] = True
         with patch.object(source, '_get_json', return_value=response), self.assertRaises(source.SourceError):
-            source.latest_release()
+            source.latest_release('Artypoul/superpowers')
+
+    def test_pinned_commit_stages_without_tag_lookup(self):
+        release = {'repo': 'Artypoul/superpowers', 'tag': 'v7.0.2', 'version': '7.0.2', 'expected_commit': 'a' * 40}
+        with tempfile.TemporaryDirectory() as temp, patch.object(source, '_get_json', return_value={'sha': 'a' * 40}) as get, patch.object(source, '_request_bytes', return_value=archive_files(package_files())):
+            candidate = source.stage_release(release, temp)
+        get.assert_called_once_with('https://api.github.com/repos/Artypoul/superpowers/commits/' + 'a' * 40)
+        self.assertEqual(candidate['commit'], 'a' * 40)
+
+    def test_pinned_commit_mismatch_fails_before_download(self):
+        release={'repo':'Artypoul/superpowers','tag':'v7.0.2','version':'7.0.2','expected_commit':'a'*40}
+        with tempfile.TemporaryDirectory() as temp, patch.object(source,'_get_json',return_value={'sha':'b'*40}), patch.object(source,'_request_bytes') as download:
+            with self.assertRaises(source.SourceError):source.stage_release(release,temp)
+            download.assert_not_called()
+
+    def test_stage_requires_repository(self):
+        with tempfile.TemporaryDirectory() as temp, patch.object(source, '_get_json', side_effect=AssertionError('unexpected network lookup')), self.assertRaises(source.SourceError):
+            source.stage_release({'tag': 'v7.0.2', 'version': '7.0.2'}, temp)
+
+
+class RedirectTests(unittest.TestCase):
+    class Response(io.BytesIO):
+        def __init__(self,url,body=b'payload'):
+            super().__init__(body);self.url=url;self.headers={}
+        def geturl(self):return self.url
+
+    def test_rejects_api_and_archive_cross_repository_redirects(self):
+        cases=[('https://api.github.com/repos/Artypoul/superpowers/releases/latest','https://api.github.com/repos/obra/superpowers/releases/latest'),
+               ('https://codeload.github.com/Artypoul/superpowers/zip/'+'a'*40,'https://codeload.github.com/obra/superpowers/zip/'+'a'*40)]
+        for original,final in cases:
+            with self.subTest(original=original), patch.object(source.urllib.request,'build_opener',return_value=SimpleNamespace(open=lambda *a,**k:self.Response(final))), self.assertRaises(source.SourceError):
+                source._request_bytes(original)
+
+    def test_redirect_hops_are_checked_before_the_next_request(self):
+        original='https://api.github.com/repos/Artypoul/superpowers/releases/latest'
+        safe='https://api.github.com/repos/artypoul/SUPERPOWERS/releases/42'
+        foreign='https://api.github.com/repos/obra/superpowers/releases/42'
+        class Transport:
+            def __init__(self,handler,hops):self.handler=handler;self.hops=hops;self.sent=[]
+            def open(self,request,timeout):
+                self.sent.append(request.full_url)
+                for target in self.hops:
+                    request=self.handler.redirect_request(request,None,302,'Found',{},target)
+                    self.sent.append(request.full_url)
+                return RedirectTests.Response(request.full_url)
+        for hops,allowed in [([foreign],1),([safe,foreign,original],2),(['https://evil.invalid/repos/Artypoul/superpowers/releases/latest'],1),(['https://codeload.github.com/obra/superpowers/zip/'+'a'*40],1)]:
+            holder=[]
+            def opener(handler):
+                transport=Transport(handler,hops);holder.append(transport);return transport
+            with self.subTest(hops=hops), patch.object(source.urllib.request,'build_opener',side_effect=opener), self.assertRaises(source.SourceError):
+                source._request_bytes(original)
+            self.assertEqual(len(holder[0].sent),allowed)
+        holder=[]
+        def opener(handler):
+            transport=Transport(handler,[safe]);holder.append(transport);return transport
+        with patch.object(source.urllib.request,'build_opener',side_effect=opener):
+            self.assertEqual(source._request_bytes(original),b'payload')
+        self.assertEqual(holder[0].sent,[original,safe])
+
+    def test_rejects_missing_or_encoded_redirect_identity_before_read(self):
+        original='https://api.github.com/repos/Artypoul/superpowers/releases/latest'
+        for final in ['https://api.github.com/rate_limit','https://api.github.com/repos/Artypoul%2Fsuperpowers/releases/latest','https://evil.invalid/repos/Artypoul/superpowers/releases/latest']:
+            response=self.Response(final)
+            with self.subTest(final=final), patch.object(source.urllib.request,'build_opener',return_value=SimpleNamespace(open=lambda *a,**k:response)), self.assertRaises(source.SourceError):
+                source._request_bytes(original)
+
+    def test_allows_same_repository_redirects_and_case_changes(self):
+        cases=[('https://api.github.com/repos/Artypoul/superpowers/releases/latest','https://api.github.com/repos/artypoul/SUPERPOWERS/releases/42'),
+               ('https://codeload.github.com/Artypoul/superpowers/zip/'+'a'*40,'https://codeload.github.com/artypoul/SUPERPOWERS/zip/refs/tags/v7.0.2')]
+        for original,final in cases:
+            with self.subTest(original=original), patch.object(source.urllib.request,'build_opener',return_value=SimpleNamespace(open=lambda *a,**k:self.Response(final))):
+                self.assertEqual(source._request_bytes(original),b'payload')
 
 
 class ArchiveTests(unittest.TestCase):

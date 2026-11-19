@@ -22,9 +22,14 @@ def main():
         backend=NativeBackend(root,home)
         if args.action=='check':
             manifest=json.loads((root/'.agents/plugins/marketplace.json').read_text(encoding='utf-8-sig'))
-            package=root/next(x for x in manifest['plugins'] if x['name']=='superpowers')['source']['path']
+            manager=Manager(root,home,backend,None,None,None)
+            package=manager.source_path(manifest)
             current=json.loads((package/'.codex-plugin/plugin.json').read_text(encoding='utf-8-sig'))['version']
-            release=latest_release()
+            from core import inventory
+            repo=manager.source_repo(package,inventory(package),current)
+            release=latest_release(repo)
+            if release.get('repo','').casefold()!=repo.casefold():
+                raise ValueError('Release repository differs from the active source.')
             from core import version_key
             result={'status':'available' if version_key(release['version'])>version_key(current) else 'unchanged','version':current,'latest':release['version'],'release':release}
         else:

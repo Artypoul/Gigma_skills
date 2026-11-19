@@ -429,11 +429,27 @@ class Setup:
             transaction['phase']='complete';write_json(journal,transaction)
         return {'automation':request,'automation_request_path':str(path)}
 
+    def verify_existing_source(self,found,*,allow_recovery=False):
+        if not found['superpowers']:return
+        if allow_recovery and self.journal.exists() and json.loads(self.journal.read_text(encoding='utf-8-sig')).get('phase') in {'activating','installed','recovery_required'}:
+            return
+        from core import Manager
+        manager=Manager(self.root,self.home,self.backend,self.compatibility,self.latest,self.stage)
+        package=manager.source_path(json.loads(self.marketplace.read_text(encoding='utf-8-sig')))
+        files=inventory(package)
+        version=json.loads((package/'.codex-plugin/plugin.json').read_text(encoding='utf-8-sig'))['version']
+        repo=manager.source_repo(package,files,version)
+        self.catalog_manifest()
+        if repo.casefold()!=self.initial_release()['repo'].casefold():
+            raise Conflict('Requested catalog source differs from the installed Superpowers source; source migration requires explicit resolution.')
+
     def install(self):
         self.ensure_no_pending_update()
-        self.requirements();self.discover();deploy_runtime(self.runtime_source,self.root,apply=False);self.prepare_catalog(apply=False)
+        self.requirements();found=self.discover();deploy_runtime(self.runtime_source,self.root,apply=False);self.prepare_catalog(apply=False)
+        self.verify_existing_source(found,allow_recovery=True)
         with exclusive_lock(self.state/'update.lock'):
             self.ensure_no_pending_update()
+            self.verify_existing_source(self.discover(),allow_recovery=True)
             self.recover_catalog()
             from compatibility import recover_trust_leases
             recover_trust_leases(self.state/'runs',self.home)
@@ -459,7 +475,8 @@ class Setup:
                 if held_receipt_applies(previous,signature,retry=self.retry):return {'status':'held','new_failure':False,'report':previous['report']}
             run=self.state/'runs'/('bootstrap-'+uuid.uuid4().hex)
             candidate=self.stage(release,run/'candidate',baseline_package=None);package=Path(candidate['package_path']);files=inventory(package)
-            if candidate.get('version')!=release['version'] or candidate.get('commit')!=release['expected_commit']:
+            if (candidate.get('version')!=release['version'] or candidate.get('commit')!=release['expected_commit']
+                    or candidate.get('repo','').casefold()!=release['repo'].casefold()):
                 raise Conflict('The staged release differs from the Gigma catalog pin; it was not activated.')
             before=settings(self.home);policy_hash=digest(self.home/'AGENTS.md')
             checks=self.compatibility(candidate,run/'compatibility',self.home,allow_empty_outside=True)
@@ -524,6 +541,7 @@ class Setup:
                 return {'status':'rolled_back','reason':str(error)}
 
     def validate_existing(self,found,policy,runtime,automation_request):
+        self.verify_existing_source(found)
         from core import Manager
         manager=Manager(self.root,self.home,self.backend,self.compatibility,self.latest,self.stage)
         if not self.marketplace.exists():raise Conflict('Existing Superpowers lacks a managed marketplace source.')
@@ -534,6 +552,7 @@ class Setup:
         if previous and previous.get('context')==context:
             health=self.backend.health(package,version,files)
             if self.context(package,files)!=context:raise Conflict('Existing verification context changed during health validation.')
+            self.verify_existing_source(found)
             return {'status':'unchanged','version':version,'health':health,'policy':policy,'runtime':runtime,**self.automation(automation_request)}
         signature=hashlib.sha256(json.dumps({'mode':'existing','context':context},sort_keys=True).encode()).hexdigest()
         held=self.state/'bootstrap-held.json'
@@ -552,6 +571,7 @@ class Setup:
             write_json(run/'rejected.json',checks);write_json(held,hold_receipt(signature,run/'rejected.json',checks))
             return {'status':'held','new_failure':True,'reason':'existing_context_validation_failed','checks':checks,'report':str(run/'rejected.json')}
         if self.context(package,files)!=context:raise Conflict('Existing package or preferences changed during validation.')
+        self.verify_existing_source(found)
         health=self.backend.health(package,version,files)
         if self.context(package,files)!=context:raise Conflict('Existing verification context changed during health validation.')
         write_json(receipt,{'context':context,'checks':checks,'candidate':candidate})
