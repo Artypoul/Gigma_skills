@@ -362,26 +362,33 @@ def run_baseline_suite(name: str, fixture: Path, codex_home: Path) -> dict:
     ]
     # No source path outside the fixture is imported by the isolated child.
     script = (
-        'import base64, json, sys, types, unittest\\n'
+        'import base64, json, sys, types, unittest\n'
         'items = json.loads(base64.b64decode(' + repr(base64.b64encode(
-            json.dumps(payload).encode('utf-8')).decode('ascii')) + '))\\n'
-        'suite = unittest.TestSuite()\\n'
-        'for i, item in enumerate(items):\\n'
-        '    mod = types.ModuleType("immutable_baseline_" + str(i))\\n'
-        '    source = base64.b64decode(item["body"])\\n'
-        '    exec(compile(source, item["path"], "exec"), mod.__dict__)\\n'
-        '    suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(mod))\\n'
-        'count = suite.countTestCases()\\n'
-        'print("IMMUTABLE_BASELINE_TESTS=" + str(count), flush=True)\\n'
-        'if count != ' + str(BASELINE_TEST_COUNTS[name]) + ': sys.exit(1)\\n'
-        'sys.exit(0 if unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful() else 1)\\n'
-    ).replace('\\\\n', '\\n')
+            json.dumps(payload).encode('utf-8')).decode('ascii')) + '))\n'
+        'suite = unittest.TestSuite()\n'
+        'for i, item in enumerate(items):\n'
+        '    mod = types.ModuleType("immutable_baseline_" + str(i))\n'
+        '    source = base64.b64decode(item["body"])\n'
+        '    exec(compile(source, item["path"], "exec"), mod.__dict__)\n'
+        '    suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(mod))\n'
+        'count = suite.countTestCases()\n'
+        'print("IMMUTABLE_BASELINE_TESTS=" + str(count), flush=True)\n'
+        'if count != ' + str(BASELINE_TEST_COUNTS[name]) + ': sys.exit(1)\n'
+        'sys.exit(0 if unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful() else 1)\n'
+    )
     result = _fixture_python(['-c', script], fixture, codex_home)
     # Check source and frozen bytes again to reject mid-run mutation.
     if (_baseline_file_inventory(source) != inventory or
             _baseline_file_inventory(trusted_root / 'tests') != inventory):
         raise RuntimeError(f'{name}: immutable baseline changed during evaluation.')
-    match = re.search(r'(?m)^IMMUTABLE_BASELINE_TESTS=(\\d+)\\s*
+    match = re.search(r'(?m)^IMMUTABLE_BASELINE_TESTS=(\d+)\s*$', result.get('stdout', ''))
+    tests_run = int(match.group(1)) if match else 0
+    if tests_run != BASELINE_TEST_COUNTS[name]:
+        raise RuntimeError(f'{name}: baseline test execution count unverified.')
+    return {**result, 'baseline_sha256': manifest['sha256'], 'tests_run': tests_run}
+
+
+class TrustLease:
     """Temporarily trust only generated fixture paths, without whole-config restore."""
     def __init__(self, codex_home: Path, fixture_paths, journal_path: Path | None = None):
         self.codex_home=Path(codex_home).resolve()
