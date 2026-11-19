@@ -7,6 +7,8 @@
   1. **Codex-маркетплейс**: `.agents/plugins/marketplace.json` + `plugins/<X>/.codex-plugin/plugin.json`. Подключить командами: `codex plugin marketplace add <путь-к-репо>` → `codex plugin add <plugin>@gigma-skills` (плагины: `gigma-erp`, `gigma-consultant`, `vps-support`, `glaim`, `development-workflow`, `frontend-workflow`, `backend-workflow`, `h2d-transfer`, `site-sense`, `codex-toolkit`, `first-pass-quality`). Манифесты проходят `validate_plugin.py`.
   2. **Зеркало** `.codex/skills/` — копии скилов, видны когда Codex запущен в этом репо (фолбэк без установки).
 
+Установка маркетплейса на Windows и решение `Filename too long`: [инструкция](docs/windows-marketplace.md).
+
 Скилы (`SKILL.md`) общие для Claude и Codex. ⚠ Frontmatter `description`/`when_to_use` со значением, содержащим `: ` (двоеточие-пробел), **обязательно в кавычках** — иначе строгий YAML-парсер Codex отвергает скил.
 
 **Канон — `plugins/`.** `.codex/skills/` и `.codex/reference/` — зеркало; синхронизировать одной командой: **`bash sync-codex.sh`** (пересобирает `.codex` из `plugins/`). Личную папку скилов Claude обновляет отдельная команда **`bash sync-claude.sh`**: ни зеркало, ни установленные плагины её не покрывают.

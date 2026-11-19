@@ -4,20 +4,16 @@
 # Запуск: bash sync-codex.sh  (из любого места — скрипт сам перейдёт в корень репо).
 set -euo pipefail
 cd "$(dirname "$0")"
+source scripts/sync-cache-filter.sh
 
 # Пересобираем .codex с нуля, чтобы не оставлять удалённые скилы.
 rm -rf .codex/skills .codex/reference
 mkdir -p .codex/skills .codex/reference
 
 for plugin in plugins/*/; do
-  [ -d "${plugin}skills" ]    && cp -r "${plugin}skills/."    .codex/skills/
-  [ -d "${plugin}reference" ] && cp -r "${plugin}reference/." .codex/reference/
+  [ -d "${plugin}skills" ]    && copy_filtered_tree "${plugin}skills" .codex/skills
+  [ -d "${plugin}reference" ] && copy_filtered_tree "${plugin}reference" .codex/reference
 done
-
-# Python может создать служебные кэши прямо рядом со скриптами скилов.
-# Они не являются частью переносимого канона и не должны попадать в зеркало.
-find .codex -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
-find .codex -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
 
 skills=$(find .codex/skills -name SKILL.md | wc -l | tr -d ' ')
 refs=$(find .codex/reference -type f | wc -l | tr -d ' ')
