@@ -4,6 +4,9 @@ from contextlib import ExitStack, nullcontext
 from types import SimpleNamespace
 import hashlib
 import json
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -548,6 +551,93 @@ class CompatibilityUnitTests(unittest.TestCase):
     def test_inventory_rejects_traversal_and_normalizes_case(self):
         self.assertEqual(c._inventory_map([{'Path':'skills\\x\\SKILL.md','SHA256':'A'*64}]),{'skills/x/SKILL.md':'a'*64})
         with self.assertRaises(ValueError):c._inventory_map([{'path':'../escape','sha256':'a'*64}])
+
+class ImmutableBaselineAcceptanceTests(unittest.TestCase):
+    """Run immutable controller-owned tests against candidate implementations."""
+
+    @staticmethod
+    def local_fixture_python(arguments, cwd, codex_home, timeout=60):
+        process = subprocess.run([sys.executable, *arguments], cwd=cwd,
+                                 capture_output=True, text=True, timeout=timeout)
+        return {'exit_code': process.returncode, 'stdout': process.stdout,
+                'stderr': process.stderr}
+
+    def make_fixture(self, root, *, broken=False):
+        fixture = root / 'fixtures' / 'bug_fix'
+        shutil.copytree(c.RESOURCES / 'fixtures' / 'bug_fix', fixture)
+        c._prepare_baseline_snapshots(root)
+        if broken:
+            (fixture / 'discounts.py').write_text(
+                'def apply_discount(amount, percent):\n'
+                '    if percent < 0 or percent > 100:\n'
+                '        raise ValueError("percent must be between 0 and 100")\n'
+                '    if percent == 100:\n'
+                '        return 0.0\n'
+                '    return amount - percent * 2 if amount == 200 else amount\n',
+                encoding='utf-8')
+            (fixture / 'tests' / 'test_discounts.py').write_text(
+                'import unittest\nfrom discounts import apply_discount\n'
+                'class WeakenedTests(unittest.TestCase):\n'
+                '    def test_only_sampled_amount(self):\n'
+                '        self.assertEqual(apply_discount(200, 10), 180)\n',
+                encoding='utf-8')
+        else:
+            (fixture / 'discounts.py').write_text(
+                'def apply_discount(amount, percent):\n'
+                '    if not 0 <= percent <= 100:\n'
+                '        raise ValueError("invalid percentage")\n'
+                '    return amount * (1 - percent / 100)\n',
+                encoding='utf-8')
+        return fixture
+
+    def test_weakened_author_suite_cannot_hide_baseline_regression(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fixture = self.make_fixture(root, broken=True)
+            with patch.object(c, '_fixture_python', side_effect=self.local_fixture_python):
+                weakened = c._fixture_python(['-m', 'unittest', 'discover',
+                                               '-s', 'tests', '-v'], fixture, root)
+                self.assertEqual(weakened['exit_code'], 0, weakened['stderr'])
+                baseline = c.run_baseline_suite('bug_fix', fixture, root)
+                self.assertNotEqual(baseline['exit_code'], 0)
+                self.assertIn('100 != 90', baseline['stderr'])
+                loaded = {'fable5-codex': {}, **{name: {} for name in c.REQUIRED_BY_CASE['bug_fix']}}
+                def fake_git(arguments, cwd, home):
+                    if arguments[:2] == ['worktree', 'list']:
+                        return {'exit_code': 0, 'stdout': 'worktree ' + str(fixture) + '\n'}
+                    return {'exit_code': 0, 'stdout': '', 'stderr': ''}
+                with patch.object(c, 'native_items', return_value=[]), \
+                     patch.object(c, 'observed_skill_reads', return_value=loaded), \
+                     patch.object(c, 'tdd_ordering', return_value={'passed': True, 'tasks': []}), \
+                     patch.object(c, '_fixture_git', side_effect=fake_git):
+                    with self.assertRaisesRegex(RuntimeError, 'baseline'):
+                        c.assess_case('bug_fix', fixture,
+                                      {'thread_id': 'root'}, root, {}, {},
+                                      codex_home=root)
+
+    def test_correct_discount_passes_baseline_and_new_tests(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fixture = self.make_fixture(root)
+            with patch.object(c, '_fixture_python', side_effect=self.local_fixture_python):
+                result = c.run_baseline_suite('bug_fix', fixture, root)
+                self.assertEqual(result['exit_code'], 0, result['stderr'])
+                self.assertEqual(result['tests_run'], 5)
+                self.assertEqual(len(result['baseline_sha256']), 64)
+                new_tests = c._fixture_python(
+                    ['-m', 'unittest', 'discover', '-s', 'tests', '-v'], fixture, root)
+                self.assertEqual(new_tests['exit_code'], 0, new_tests['stderr'])
+
+    def test_changed_baseline_inventory_is_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fixture = self.make_fixture(root)
+            trusted = root / 'trusted-baseline' / 'bug_fix' / 'tests' / 'test_discounts.py'
+            trusted.write_text(trusted.read_text() + '\n# unauthorized edit\n',
+                               encoding='utf-8')
+            with patch.object(c, '_fixture_python', side_effect=self.local_fixture_python):
+                with self.assertRaisesRegex(RuntimeError, 'baseline'):
+                    c.run_baseline_suite('bug_fix', fixture, root)
 
 class HelperPackageHealthTests(unittest.TestCase):
     def fixture(self, root):
