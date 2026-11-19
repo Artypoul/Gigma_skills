@@ -152,12 +152,12 @@
     },
     {
       "name": "fable5-codex",
-      "version": "1.4.2",
+      "version": "1.4.3",
       "description": "Source-based Fable 5 workflow for Codex and ChatGPT through pinned GitHub sources.",
       "source": {
         "source": "url",
         "url": "https://github.com/Artypoul/claude-fable-5-system-prompt.git",
-        "sha": "a0d7b991d29e2cb0f18f3501fd1152335a3bb90c"
+        "sha": "cb76769f1fce9df196c22b2b708ba8474cbf5aa1"
       },
       "policy": {
         "installation": "AVAILABLE",
