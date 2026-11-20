@@ -649,6 +649,106 @@ class CurrentSubjectReviewRegressionTests(unittest.TestCase):
         self.assertTrue(c.review_evidence(native, after_event_line=25, expected_subject=subject)['passed'])
 
 
+
+class CompleteSkillReadIntegrityRegressionTests(unittest.TestCase):
+    """A4: provider metadata must not replace the actual skill body."""
+
+    def fixture(self, root, *, body='abcdef'):
+        fable = root / 'fable' / 'SKILL.md'
+        fable.parent.mkdir()
+        fable.write_text(skill_text('fable5-codex'), encoding='utf-8')
+        skill = root / 'superpowers' / 'brainstorming' / 'SKILL.md'
+        skill.parent.mkdir(parents=True)
+        skill.write_bytes(body.encode('utf-8'))
+        target = {'id': 'catalog:brainstorming', 'plugin_id': 'superpowers@candidate',
+                  'path': str(skill), 'sha256': c.digest(skill)}
+        source = {'path': str(fable), 'cwd': str(root), 'catalog_sha256': 'f' * 64}
+        return skill, target, source
+
+    @staticmethod
+    def page(target, source, offset, body, *, total=None, line=20, **changes):
+        value = {'skill': {'id': target['id'], 'plugin_id': target['plugin_id'],
+                            'name': 'superpowers:brainstorming', 'path': target['path']},
+                 'sha256': target['sha256'], 'offset': offset, 'content': body,
+                 'total_chars': len(body) if total is None else total, 'partial': False,
+                 'warning_count': 0, 'warnings': [],
+                 'cwd': source['cwd'], 'catalog_sha256': source['catalog_sha256']}
+        value.update(changes)
+        return {'type': 'mcpToolCall', 'tool': 'read_skill', 'status': 'completed',
+                'event_line': line, 'result': {'structuredContent': value}}
+
+    def read(self, items, target, source):
+        return c.observed_skill_reads(items, {'brainstorming': target}, source)
+
+    def test_claimed_hash_cannot_replace_actual_body(self):
+        with tempfile.TemporaryDirectory() as td:
+            skill, target, source = self.fixture(Path(td))
+            # Exact A4 false positive: one warned byte claims the full source hash.
+            forged = self.page(target, source, 0, 'x', total=1, partial=True,
+                               warning_count=1, warnings=['TRUNCATED'])
+            self.assertNotIn('brainstorming', self.read([forged], target, source))
+            # No warning but the same claimed hash still does not prove the bytes.
+            forged = self.page(target, source, 0, 'xxxxxx', total=6)
+            self.assertNotIn('brainstorming', self.read([forged], target, source))
+
+    def test_partial_or_warned_mcp_read_is_not_complete(self):
+        with tempfile.TemporaryDirectory() as td:
+            _, target, source = self.fixture(Path(td))
+            first = self.page(target, source, 0, 'abc', total=6)
+            for details in [{'partial': True}, {'warning_count': 1},
+                            {'warnings': ['SOURCE_UNVERIFIED']}]:
+                with self.subTest(details=details):
+                    bad = self.page(target, source, 3, 'def', total=6, **details)
+                    self.assertNotIn('brainstorming', self.read([first, bad], target, source))
+
+    def test_foreign_identity_or_project_is_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            _, target, source = self.fixture(Path(td))
+            good = self.page(target, source, 0, 'abcdef', total=6)
+            variants = [
+                lambda x: x['skill'].update(id='other'),
+                lambda x: x['skill'].update(plugin_id='foreign@plugin'),
+                lambda x: x.update(cwd='C:/foreign-project'),
+                lambda x: x.update(catalog_sha256='0' * 64)]
+            for mutate in variants:
+                with self.subTest(mutate=variants.index(mutate)):
+                    item = copy.deepcopy(good)
+                    mutate(item['result']['structuredContent'])
+                    self.assertNotIn('brainstorming', self.read([item], target, source))
+
+    def test_conflicting_pages_are_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            _, target, source = self.fixture(Path(td))
+            first = self.page(target, source, 0, 'abc', total=6)
+            for second in [
+                self.page(target, source, 2, 'cdef', total=6),
+                self.page(target, source, 3, 'def', total=7),
+                self.page(target, source, 3, 'def', total=6, sha256='0' * 64)]:
+                with self.subTest(second=second):
+                    self.assertNotIn('brainstorming', self.read([first, second], target, source))
+
+    def test_late_warned_page_invalidates_earlier_complete_read(self):
+        with tempfile.TemporaryDirectory() as td:
+            _, target, source = self.fixture(Path(td))
+            complete = self.page(target, source, 0, 'abcdef', total=6)
+            warned = self.page(target, source, 0, 'x', total=1, partial=True, warning_count=1, line=21)
+            self.assertNotIn('brainstorming', self.read([complete, warned], target, source))
+
+    def test_valid_paginated_bom_crlf_read_is_complete(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _, target, source = self.fixture(root)
+            skill = Path(target['path'])
+            skill.write_bytes(b'\xef\xbb\xbfalpha\r\n' + 'beta\r\n'.encode('utf-8'))
+            target['sha256'] = c.digest(skill)
+            body = skill.read_bytes().decode('utf-8-sig')
+            split = 4
+            pages = [self.page(target, source, 0, body[:split], total=len(body)),
+                     self.page(target, source, split, body[split:], total=len(body), line=21)]
+            self.assertEqual(self.read(pages, target, source)['brainstorming']['method'],
+                             'complete_mcp_read')
+
+
 class ImmutableBaselineAcceptanceTests(unittest.TestCase):
     """Run immutable controller-owned tests against candidate implementations."""
 
