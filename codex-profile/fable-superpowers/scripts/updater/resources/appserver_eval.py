@@ -74,6 +74,136 @@ def sha(path: Path) -> str | None:
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
 
 
+def evaluate_owner_decision_fixture(manifest: dict, observed: dict, artifact_root: Path,
+                                    *, allow_offline_fixture: bool = False) -> dict:
+    """Deterministic D1–D12 receipt adapter (NOT a live-agent evaluator).
+
+    Real agent correctness still requires an independently observed semantic
+    reviewer and a live trace. This function guards only the explicit frozen
+    contract and subject/cancellation/chronology integrity.
+    """
+    if not isinstance(manifest, dict) or not isinstance(observed, dict):
+        raise ValueError('Owner-decision inputs must be structured dictionaries.')
+    required = {'id','prompt','turns','criteria','allowed_paths','preserve'}
+    if not required.issubset(manifest):
+        raise ValueError('Owner-decision manifest misses required contract fields.')
+    case = manifest['id']
+    if not isinstance(case, str) or not re.fullmatch(r'D(?:[1-9]|1[0-2])', case):
+        raise ValueError('Unknown owner-decision fixture id.')
+    if (not isinstance(manifest['prompt'], str) or not manifest['prompt'].strip()
+            or not isinstance(manifest['turns'], list)
+            or not all(isinstance(turn, str) and turn.strip() for turn in manifest['turns'])
+            or not isinstance(manifest['criteria'], dict)
+            or not isinstance(manifest['allowed_paths'], list)
+            or not isinstance(manifest['preserve'], dict)):
+        raise ValueError('Invalid owner-decision manifest schema.')
+    repo_root = HERE.parents[4]
+    original = repo_root/'codex-profile'/'tests'/'fixtures'/'agent_acceptance'/'owner-decisions'/(case.lower()+'.json')
+    if not original.is_file() or json.loads(original.read_text(encoding='utf-8')) != manifest:
+        raise ValueError('Owner-decision manifest differs from the frozen source.')
+    if observed.get('manifest_sha256') != sha(original):
+        raise ValueError('Owner-decision fixture manifest hash is stale.')
+    mode = observed.get('review_mode')
+    if mode == 'offline_fixture' and not allow_offline_fixture:
+        raise RuntimeError('independent_live reviewer unavailable: offline fixtures are not model trials.')
+    if mode not in {'offline_fixture','independent_live'}:
+        raise RuntimeError('Owner-decision evidence origin is unverified.')
+    if mode == 'independent_live':
+        reviewer = observed.get('observed_live_reviewer')
+        if (not isinstance(reviewer, dict) or reviewer.get('source') != 'independent_controller'
+                or reviewer.get('status') != 'completed'):
+            raise RuntimeError('independent_live owner review not observed by controller.')
+
+    root = Path(artifact_root).resolve(strict=True)
+    if not root.is_dir():
+        raise ValueError('Artifact root missing.')
+    inventory = {}
+    for candidate in sorted(root.rglob('*')):
+        if candidate.is_symlink():
+            raise ValueError('Artifact inventory may not follow symbolic links.')
+        if candidate.is_file():
+            relative = candidate.relative_to(root).as_posix()
+            inventory[relative] = sha(candidate)
+    allowed = manifest['allowed_paths']
+    if (len(allowed) != len(set(allowed))
+            or not allowed or any(not isinstance(p, str) or p.startswith('/')
+                or ':' in p or '..' in p.split('/') or '\\' in p or not p
+                for p in allowed)
+            or not set(inventory).issubset(set(allowed))
+            or not set(allowed).issubset(set(inventory))):
+        raise ValueError('Owner-decision artifact changed outside its exact allowlist.')
+    if observed.get('artifact_inventory') != inventory:
+        raise ValueError('Owner-decision artifact inventory is stale or incomplete.')
+    subject = hashlib.sha256(json.dumps(
+        inventory, sort_keys=True, separators=(',', ':')).encode('utf-8')).hexdigest()
+    if observed.get('artifact_subject_sha256') != subject:
+        raise ValueError('Owner-decision artifact subject does not match actual bytes.')
+    preserved = manifest.get('preserve', {})
+    decisions = observed.get('decisions')
+    if (not isinstance(decisions, dict)
+            or any(decisions.get(key) != value for key,value in preserved.items())):
+        raise RuntimeError('An approved owner decision was changed without permission.')
+    cancelled = manifest.get('cancelled', [])
+    if (not isinstance(cancelled, list) or observed.get('cancelled') != cancelled
+            or set(cancelled) & set(decisions)):
+        raise RuntimeError('Cancelled requirement was resurrected or cancellation lost.')
+    facts = observed.get('decision_facts')
+    if (not isinstance(facts, dict)
+            or any(facts.get(key) != value for key,value in manifest.get('locked_facts', {}).items())
+            or set(facts) & set(manifest.get('forbid_keys', []))):
+        raise RuntimeError('Locked decision was changed, or a new limit/target was invented.')
+
+    expected_criteria = manifest['criteria']
+    required_criteria = manifest.get('mandatory', list(expected_criteria))
+    receipts = observed.get('criterion_evidence')
+    if (not isinstance(receipts, dict) or set(receipts) != set(expected_criteria)
+            or not isinstance(required_criteria, list)
+            or not set(required_criteria).issubset(expected_criteria)):
+        raise RuntimeError('Owner-decision evidence is missing required criteria.')
+    for key, expected_status in expected_criteria.items():
+        evidence = receipts[key]
+        if (not isinstance(evidence, dict)
+                or evidence.get('status') != expected_status
+                or not isinstance(evidence.get('evidence'), str)
+                or not evidence['evidence'].strip()):
+            raise RuntimeError('Owner-decision criterion is unverified or contradicted.')
+        current = evidence.get('subject_sha256') == subject
+        if not current and not (expected_status == 'not_checked'
+                                and manifest.get('locked_facts', {}).get('evidence_stale') is True):
+            raise RuntimeError('Owner-decision review/test evidence is stale.')
+    open_criteria = sorted(key for key, receipt in receipts.items()
+                           if receipt['status'] not in {'satisfied','cancelled'})
+    if observed.get('unresolved_criteria') != [key for key,status in expected_criteria.items()
+                                                if status not in ('satisfied','cancelled')]:
+        raise RuntimeError('Owner-decision unresolved criteria were hidden or altered.')
+
+    reviews = observed.get('review_history')
+    if reviews != manifest.get('review_history') or not isinstance(reviews, list):
+        raise RuntimeError('Owner-decision review history is incomplete or mismatched.')
+    if any(not isinstance(v.get('event_line'), int) or v.get('event_line') < 0
+           for v in reviews) or any(a['event_line'] >= b['event_line']
+                                   for a,b in zip(reviews,reviews[1:])):
+        raise RuntimeError('Owner-decision review chronology is invalid.')
+    last_review = reviews[-1]['verdict'] if reviews else 'UNAVAILABLE'
+    latest_blocks = (last_review != 'APPROVE' or bool(reviews and reviews[-1].get('blocking')))
+    states = [receipts[key]['status'] for key in required_criteria]
+    if 'violated' in states or last_review == 'REQUEST_CHANGES':
+        status = 'failed'
+    elif any(s not in ('satisfied','cancelled') for s in states) or latest_blocks:
+        status = 'incomplete'
+    else:
+        status = 'passed'
+    ready = status == 'passed'
+    if status != manifest.get('expected_status'):
+        raise RuntimeError('Owner-decision expected gate contradicts evidence state.')
+    if observed.get('declared_ready') is not ready:
+        raise RuntimeError('Owner-decision agent declared false ready or false incomplete.')
+    return {'status':status, 'ready':ready, 'evidence_tier':mode,
+            'subject_sha256':subject, 'open_criteria':open_criteria,
+            'latest_review':last_review,
+            'in_flight_steering_verified':False}
+
+
 def safe_value(value):
     """Discard private reasoning/encryption, preserving ordinary tool evidence."""
     if isinstance(value, dict):
