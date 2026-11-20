@@ -511,16 +511,14 @@ class CompatibilityUnitTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):c.review_evidence(native)
 
     def test_bug_red_before_production_and_green_after(self):
-        fixture=Path('C:/fixture')
-        def write(path,line):return {'type':'fileChange','event_line':line,'changes':[{'path':str(fixture/path)}]}
-        red={'type':'commandExecution','event_line':2,'command':'python -m unittest','exitCode':1,'aggregatedOutput':'AssertionError: 190 != 180\nFAILED'}
-        green={'type':'commandExecution','event_line':4,'command':'python -m unittest','exitCode':0,'aggregatedOutput':'Ran 6 tests in 0.001s\n\nOK\n'}
-        items=[write('tests/test_discounts.py',1),red,write('discounts.py',3),green]
-        self.assertTrue(c.tdd_ordering('bug_fix',fixture,items)['passed'])
-        with self.assertRaisesRegex(RuntimeError,'RED must precede'):
-            c.tdd_ordering('bug_fix',fixture,[items[2],items[0],red,green])
-        with self.assertRaisesRegex(RuntimeError,'GREEN must follow'):
-            c.tdd_ordering('bug_fix',fixture,[items[0],red,green,items[2]])
+        with tempfile.TemporaryDirectory() as td:
+            fixture = TestInventoryFreshnessRegressionTests().fixture(Path(td))
+            items = TestInventoryFreshnessRegressionTests().items(fixture)
+            self.assertTrue(c.tdd_ordering('bug_fix',fixture,items)['passed'])
+            with self.assertRaisesRegex(RuntimeError,'RED must precede'):
+                c.tdd_ordering('bug_fix',fixture,[items[2],items[0],items[1],items[3]])
+            with self.assertRaisesRegex(RuntimeError,'GREEN'):
+                c.tdd_ordering('bug_fix',fixture,[items[0],items[1],items[3],items[2]])
 
     def test_hash_and_diff_reads_are_not_writes_to_mentioned_source(self):
         fixture=Path(tempfile.gettempdir()).resolve()/'fixture'
@@ -546,26 +544,56 @@ class CompatibilityUnitTests(unittest.TestCase):
         self.assertTrue(c._writes_path({'type':'commandExecution','command':mixed},fixture,'invoice_helpers.py'))
 
     def test_production_command_write_after_green_is_rejected(self):
-        fixture=Path('C:/fixture')
-        items=[{'type':'fileChange','event_line':1,'changes':[{'path':str(fixture/'tests/test_discounts.py')}]},
-            {'type':'commandExecution','event_line':2,'command':'python -m unittest','exitCode':1,'aggregatedOutput':'AssertionError: 190 != 180\nFAILED'},
-            {'type':'fileChange','event_line':3,'changes':[{'path':str(fixture/'discounts.py')}]},
-            {'type':'commandExecution','event_line':4,'command':'python -m unittest','exitCode':0,'aggregatedOutput':'Ran 6 tests in 0.001s\nOK\n'},
-            {'type':'commandExecution','event_line':5,'command':"Set-Content -LiteralPath 'discounts.py' -Value 'changed after green'",'exitCode':0}]
-        with self.assertRaisesRegex(RuntimeError,'GREEN must follow'):
-            c.tdd_ordering('bug_fix',fixture,items)
+        with tempfile.TemporaryDirectory() as td:
+            fixture = TestInventoryFreshnessRegressionTests().fixture(Path(td))
+            items = TestInventoryFreshnessRegressionTests().items(fixture)
+            items.append({'type':'commandExecution','event_line':5,
+                'command':"Set-Content -LiteralPath 'discounts.py' -Value 'changed after green'",
+                'exitCode':0})
+            with self.assertRaisesRegex(RuntimeError,'GREEN|stale'):
+                c.tdd_ordering('bug_fix',fixture,items)
 
     def test_plan_requires_each_interface_red_before_its_module(self):
-        fixture=Path('C:/fixture')
-        def write(path,line):return {'type':'fileChange','event_line':line,'changes':[{'path':str(fixture/path)}]}
-        def red(name,line):return {'type':'commandExecution','event_line':line,'command':'python -m unittest','exitCode':1,'aggregatedOutput':f'ImportError: cannot import name {name}'}
-        def green(line):return {'type':'commandExecution','event_line':line,'command':'python -m unittest','exitCode':0,'aggregatedOutput':'Ran 8 tests in 0.001s\nOK\n'}
-        items=[write('tests/test_invoice_helpers.py',1),red('normalize_currency',2),write('invoice_helpers.py',3),green(4),
-            write('tests/test_invoice_cli.py',5),red('format_invoice',6),write('invoice_cli.py',7),green(8)]
-        self.assertTrue(c.tdd_ordering('approved_plan',fixture,items)['passed'])
-        bad=items[:5]+[items[6],items[5],items[7]]
-        with self.assertRaisesRegex(RuntimeError,'RED must precede'):
-            c.tdd_ordering('approved_plan',fixture,bad)
+        with tempfile.TemporaryDirectory() as td:
+            fixture = Path(td)/'fixture'
+            (fixture/'tests').mkdir(parents=True)
+            for path in ('invoice_helpers.py','invoice_cli.py','APPROVED_PLAN.md',
+                         'tests/test_invoice_helpers.py','tests/test_invoice_cli.py'):
+                (fixture/path).write_text('canonical fixture source\n')
+            inventory = c.fixture_inventory(fixture, ['tests','invoice_helpers.py',
+                                            'invoice_cli.py','APPROVED_PLAN.md'])
+            tests = {key:value for key,value in inventory.items() if key.startswith('tests/')}
+            def write(path,line):
+                return {'type':'fileChange','event_line':line,
+                        'changes':[{'path':str(fixture/path)}]}
+            def run(line,target,failed=False,interface=None,all_targets=False):
+                ids = (['test_invoice_helpers.Suite.test_helper',
+                        'test_invoice_cli.Suite.test_cli'] if all_targets else
+                       [f'{Path(target).stem}.Suite.test_{"helper" if "helpers" in target else "cli"}'])
+                output = '\n'.join(f'{id.split(".")[-1]} ({id.rsplit(".",1)[0]}) ... ' +
+                                   ('FAIL' if failed else 'ok') for id in ids)
+                if interface:
+                    output += '\nImportError: cannot import name ' + interface
+                output += f'\nRan {len(ids)} tests in 0.001s\n' + ('FAILED' if failed else 'OK') + '\n'
+                cmd = 'python -B -m unittest discover -s tests -v'
+                receipt = {'execution_id':f'test-{line}', 'cwd':str(fixture),
+                           'event_line':line, 'command':cmd, 'exit_code':1 if failed else 0,
+                           'tests_run':len(ids), 'test_ids':ids,
+                           'source_test_inventory':tests, 'inventory':inventory}
+                return {'type':'commandExecution','event_line':line,'command':cmd,
+                        'exitCode':1 if failed else 0,'aggregatedOutput':output,
+                        'controller_evidence':receipt}
+            events = [write('tests/test_invoice_helpers.py',1),
+                run(2,'tests/test_invoice_helpers.py',failed=True,interface='normalize_currency'),
+                write('invoice_helpers.py',3), run(4,'tests/test_invoice_helpers.py'),
+                write('tests/test_invoice_cli.py',5),
+                run(6,'tests/test_invoice_cli.py',failed=True,interface='format_invoice'),
+                write('invoice_cli.py',7),
+                run(8,'tests/test_invoice_cli.py',all_targets=True)]
+            self.assertTrue(c.tdd_ordering('approved_plan',fixture,events)['passed'])
+            bad = events[:5] + [events[6],events[5],events[7]]
+            with self.assertRaisesRegex(RuntimeError,'RED must precede'):
+                c.tdd_ordering('approved_plan',fixture,bad)
 
     def test_inventory_rejects_traversal_and_normalizes_case(self):
         self.assertEqual(c._inventory_map([{'Path':'skills\\x\\SKILL.md','SHA256':'A'*64}]),{'skills/x/SKILL.md':'a'*64})
