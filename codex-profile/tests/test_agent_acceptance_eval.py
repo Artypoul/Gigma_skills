@@ -54,6 +54,46 @@ class ExecutableTests(unittest.TestCase):
             runner.resolve_codex('missing-explicit-codex.exe')
 
 
+
+class ObservedTestReceiptRegressionTests(unittest.TestCase):
+    def test_command_completion_records_real_file_inventory_and_test_ids(self):
+        with tempfile.TemporaryDirectory() as td:
+            cwd = Path(td)
+            (cwd/'tests').mkdir()
+            (cwd/'tests'/'test_example.py').write_text(
+                'import unittest\nclass Check(unittest.TestCase):\n'
+                '    def test_behavior(self): self.assertTrue(True)\n')
+            (cwd/'source.py').write_text('VALUE = 1\n')
+            observer = runner.AppServer.__new__(runner.AppServer)
+            observer.root_id = 'parent'
+            observer.cwd = cwd
+            observer.watch_paths = [cwd/'tests',cwd/'source.py']
+            observer.observed_execution_evidence = []
+            observer.last_inventory = {}
+            item = {'id':'execution-11', 'type':'commandExecution',
+                    'command':'python -B -m unittest discover -s tests -v', 'exitCode':0,
+                    'aggregatedOutput':'test_behavior (test_example.Check.test_behavior) ... ok\n'
+                                       'Ran 1 test in 0.001s\n\nOK'}
+            observer._observe({'method':'item/completed','params':{
+                'threadId':'parent','item':item}},11)
+            self.assertEqual(len(observer.observed_execution_evidence),1)
+            row = observer.observed_execution_evidence[0]
+            self.assertEqual(row['execution_id'],'execution-11')
+            self.assertEqual(row['event_line'],11)
+            self.assertEqual(row['tests_run'],1)
+            self.assertIn('test_example.Check.test_behavior',row['test_ids'])
+            self.assertEqual(row['inventory']['source.py'],
+                             hashlib.sha256((cwd/'source.py').read_bytes()).hexdigest())
+            before = row['inventory']
+            (cwd/'source.py').write_text('VALUE = 2\n')
+            observer._observe({'method':'item/completed','params':{
+                'threadId':'parent','item':{'id':'execution-12','type':'commandExecution',
+                 'command':"Copy-Item -LiteralPath 'source-2.py' -Destination 'source.py'",
+                 'exitCode':0}}},12)
+            self.assertIn('source.py',observer.observed_execution_evidence[-1]['changed_paths'])
+            self.assertNotEqual(before,observer.observed_execution_evidence[-1]['inventory'])
+
+
 class AcceptanceTests(unittest.TestCase):
     def observation(self):
         return {'status': 'completed', 'thread_id': 'parent', 'cwd': str(ROOT),
