@@ -1009,45 +1009,121 @@ def _evidence_command(command: str) -> str:
 
 
 def observed_skill_reads(items: list, expected: dict, fable: dict) -> dict:
-    targets = {name:row for name,row in expected.items()}
-    targets['fable5-codex'] = {**fable,'sha256':digest(Path(fable['path']))}
-    found, pages = {},{}
+    """Verify full skill bodies, not provider claims about body size or digest."""
+    targets = {name: row for name, row in expected.items()}
+    targets['fable5-codex'] = {**fable, 'sha256': digest(Path(fable['path']))}
+    found, pages, invalid = {}, {}, set()
+
+    def units(text: str) -> int:
+        # The read_skill provider uses JavaScript string offsets (UTF-16).
+        return len(text.encode('utf-16-le')) // 2
+
     for item in items:
-        if item.get('type')=='commandExecution':
-            command = _evidence_command(item.get('command',''))
-            variables=_path_variables(command)
-            command=re.sub(r'\$([\w]+)',lambda match:variables.get(match[1],match[0]),command)
-            output = item.get('aggregatedOutput','') or ''
-            if not re.search(r'get-content|\bcat\b|read_text|readfile|read-file|\btype\b',command):
+        if item.get('type') == 'commandExecution':
+            command = _evidence_command(item.get('command', ''))
+            variables = _path_variables(command)
+            command = re.sub(r'\$([\w]+)', lambda match: variables.get(match[1], match[0]), command)
+            output = item.get('aggregatedOutput', '') or ''
+            if not re.search(r'get-content|\bcat\b|read_text|readfile|read-file|\btype\b', command):
                 continue
-            for name,skill in targets.items():
-                expected_text=Path(skill['path']).read_text(encoding='utf-8-sig')
-                normalize=lambda text:re.sub(r'\r+\n','\n',text).replace('\ufeff','').strip()
-                complete=normalize(expected_text) in normalize(output)
-                # A later command may fail after this exact complete read. The
-                # complete source body and resolved candidate path are evidence;
-                # the aggregate shell exit status does not undo that earlier read.
+            for name, skill in targets.items():
+                expected_text = Path(skill['path']).read_text(encoding='utf-8-sig')
+                normalize = lambda text: re.sub(r'\r+\n', '\n', text).replace('\ufeff', '').strip()
+                complete = normalize(expected_text) in normalize(output)
+                # File-read fallback is an independent body-level proof, not
+                # an unverified claim from a summarized read_skill receipt.
                 if _normpath(skill['path']).casefold() in command and complete:
-                    found[name]={'event_line':item['event_line'],'path':skill['path'],'sha256':skill['sha256'],'method':'complete_file_read'}
-        elif item.get('type')=='mcpToolCall' and item.get('tool')=='read_skill' and item.get('status') in {'completed','success'}:
+                    found[name] = {'event_line': item['event_line'], 'path': skill['path'],
+                                   'sha256': skill['sha256'], 'method': 'complete_file_read'}
+        elif item.get('type') == 'mcpToolCall' and item.get('tool') == 'read_skill':
             try:
                 value = _tool_payload(item.get('result') or {})
-                skill = value.get('skill',{})
-                name = skill.get('name','').split(':')[-1]
-                if name not in targets or _normpath(skill.get('path',''))!=_normpath(targets[name]['path']) or value.get('sha256')!=targets[name]['sha256']:
+                skill = value.get('skill', {})
+                name = str(skill.get('name', '')).split(':')[-1]
+                if name not in targets:
                     continue
-                key = (name,value['sha256'])
-                pages.setdefault(key,[]).append((value.get('offset',0),len(value.get('content','')),value.get('total_chars'),item['event_line']))
-            except (ValueError,RuntimeError,KeyError):
-                continue
-    for (name,sha256),chunks in pages.items():
-        end,total=0,None
-        for offset,size,count,line in sorted(chunks):
-            if total is None:total=count
-            if count!=total or offset>end:break
-            end=max(end,offset+size)
-        if total is not None and end>=total:
-            found[name]={'event_line':chunks[-1][3],'path':targets[name]['path'],'sha256':sha256,'method':'complete_mcp_read'}
+                target = targets[name]
+                identity = ('id', 'path', 'plugin_id')
+                def attr(record, key):
+                    return record.get(key, record.get('pluginId') if key == 'plugin_id' else None)
+                correct_identity = (
+                    item.get('status') in {'completed', 'success'}
+                    and all(attr(target, key) is not None
+                            and attr(skill, key) == attr(target, key)
+                            for key in ('id', 'plugin_id'))
+                    and _normpath(skill.get('path', '')) == _normpath(target['path'])
+                    and value.get('sha256') == target.get('sha256')
+                    and value.get('partial') is False
+                    and type(value.get('warning_count')) is int
+                    and value['warning_count'] == 0
+                    and value.get('warnings', []) == []
+                    and isinstance(value.get('content'), str)
+                    and type(value.get('offset')) is int and value['offset'] >= 0
+                    and type(value.get('total_chars')) is int and value['total_chars'] > 0
+                    and isinstance(item.get('event_line'), int)
+                )
+                if fable.get('cwd') is not None:
+                    correct_identity = correct_identity and _normpath(value.get('cwd', '')) == _normpath(fable['cwd'])
+                if fable.get('catalog_sha256') is not None:
+                    correct_identity = correct_identity and value.get('catalog_sha256') == fable['catalog_sha256']
+                if not correct_identity:
+                    invalid.add(name)
+                    continue
+                pages.setdefault(name, []).append(value | {'event_line': item['event_line']})
+            except (ValueError, RuntimeError, KeyError, TypeError):
+                if isinstance(item.get('result'), dict):
+                    # A corrupt matching read must invalidate even an earlier
+                    # successful read, rather than being ignored in its favor.
+                    raw = item['result'].get('structuredContent', {})
+                    n = str(raw.get('skill', {}).get('name', '')).split(':')[-1]
+                    if n in targets:
+                        invalid.add(n)
+
+    for name, records in pages.items():
+        if name in invalid:
+            continue
+        target = targets[name]
+        path = Path(target['path'])
+        if not path.is_file() or path.is_symlink() or digest(path) != target['sha256']:
+            continue
+        try:
+            original_text = path.read_bytes().decode('utf-8-sig')
+        except (UnicodeError, OSError):
+            continue
+        expected_total = units(original_text)
+        # Reject partial, changing, overlapping and missing pages.
+        unique = {}
+        conflict = False
+        for page in records:
+            offset, content = page['offset'], page['content']
+            bound = offset + units(content)
+            if (page['total_chars'] != expected_total or bound > expected_total
+                    or (offset in unique and unique[offset] != content)):
+                conflict = True
+                break
+            unique[offset] = content
+            next_offset = page.get('next_offset', 'missing')
+            if next_offset != 'missing' and (
+                    next_offset != (bound if bound < expected_total else None)):
+                conflict = True
+                break
+        if conflict:
+            continue
+        cursor, collected = 0, []
+        for offset, chunk in sorted(unique.items()):
+            if offset != cursor or not chunk:
+                conflict = True
+                break
+            cursor += units(chunk)
+            collected.append(chunk)
+        if conflict or cursor != expected_total or ''.join(collected) != original_text:
+            continue
+        found[name] = {'event_line': max(page['event_line'] for page in records),
+                       'path': target['path'], 'sha256': target['sha256'],
+                       'method': 'complete_mcp_read', 'pages': len(unique),
+                       'content_verified': True}
+    for name in invalid:
+        found.pop(name, None)
     return found
 
 
