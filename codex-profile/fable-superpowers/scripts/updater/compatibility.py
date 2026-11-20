@@ -1051,37 +1051,143 @@ def observed_skill_reads(items: list, expected: dict, fable: dict) -> dict:
     return found
 
 
-def review_evidence(native: dict, *, after_event_line: int | None = None) -> dict:
-    activities = native.get('native_subagent_activity',[])
-    valid=[]
-    for child_id,reports in native.get('child_reports',{}).items():
-        phases={x.get('kind') for x in activities if x.get('agentThreadId')==child_id}
-        finals=[x for x in reports if x.get('phase')=='final_answer' and len(x.get('text',''))>=100]
-        for report in finals:
-            text=report['text']
-            plain=text.replace('**','').replace('__','')
-            verdicts=re.findall(r'(?im)^\s*(?:verdict|вердикт|итог)\s*[:—-]\s*(.+)$',plain)
-            verdict=verdicts[-1].strip() if verdicts else next((line.strip() for line in plain.splitlines() if line.strip()),'')
-            negative=bool(re.search(r"\b(?:not|don't|cannot|can't|reject(?:ed)?|conditional|pending|defer(?:red)?|block(?:ed|ing)?|if|once|after|when|provided|unless|until)\b|subject to|as long as|request changes|needs? changes|не\s+(?:готов|одобр|утверж|рекоменд)|при условии|если",verdict,re.I))
-            first_sentence=re.split(r'[.!](?:\s|$)',verdict,maxsplit=1)[0].strip().casefold()
-            ready_no_findings=bool(re.fullmatch(r'ready\s*:\s*no critical,\s*important,?\s*or minor findings',first_sentence))
-            approved=not negative and (first_sentence in {'approve','approved','одобрено','одобряю'} or ready_no_findings)
-            severity_lines=re.findall(r'(?im)^\s*[-*]?\s*(?:critical|important|blocker|критическ\w*|важн\w*)\s*:\s*(.*)$',plain)
-            unresolved=any(not re.fullmatch(r'(?:none|нет|0|no (?:issues|findings)|not found)[.!\s]*',line.strip(),re.I) for line in severity_lines)
-            scope=bool(re.search(r'plan|план|diff|файл|scope',text,re.I))
-            validation=bool(re.search(r'test|тест|провер',text,re.I))
-            starts=[x['event_line'] for x in activities if x.get('agentThreadId')==child_id and x.get('kind')=='started' and isinstance(x.get('event_line'),int)]
-            completions=[x['event_line'] for x in activities if x.get('agentThreadId')==child_id and x.get('kind')=='completed' and isinstance(x.get('event_line'),int)]
-            report_line=report.get('event_line')
-            eligible=[line for line in starts if (after_event_line is None or line>after_event_line)
-                and isinstance(report_line,int) and line<report_line and any(end>=report_line for end in completions)]
-            fresh=after_event_line is None or bool(eligible)
-            if {'started','completed'}.issubset(phases) and approved and not unresolved and scope and validation and fresh:
-                valid.append({'child_id':child_id,'event_line':report.get('event_line'),
-                    'reviewer_start_event_line':max(eligible) if eligible else None,'verdict':text})
-    if not valid:
+def review_evidence(native: dict, *, after_event_line: int | None = None,
+                    expected_subject: dict | None = None) -> dict:
+    """Assess the last completed review by every observed reviewer.
+
+    A strict review binds its declared file coverage and verified test receipts
+    to the controller's already-frozen subject. Unbound legacy reports remain
+    diagnostic and must not be used as strict acceptance evidence.
+    """
+    strict = expected_subject is not None
+    if strict:
+        files = expected_subject.get('files') if isinstance(expected_subject, dict) else None
+        criteria = expected_subject.get('criteria_sha256') if isinstance(expected_subject, dict) else None
+        if (not isinstance(files, dict) or not files
+                or not all(isinstance(p, str) and p and isinstance(h, str)
+                           and re.fullmatch(r'[0-9a-fA-F]{64}', h) for p, h in files.items())
+                or not isinstance(criteria, str) or not re.fullmatch(r'[0-9a-fA-F]{64}', criteria)):
+            raise RuntimeError('Strict review requires a complete controller-owned subject snapshot.')
+        if len(files) != len(set(files)) or set(files) != set(sorted(files)):
+            raise RuntimeError('Review subject inventory is invalid.')
+
+    activities = native.get('native_subagent_activity', [])
+    valid = []
+    considered = 0
+    for child_id, reports in native.get('child_reports', {}).items():
+        # Implementer child reports are not reviewer decisions. A later actual
+        # reviewer rejection, however brief, must never be hidden by an old
+        # approval from the same reviewer or a different reviewer.
+        candidates = []
+        for index, report in enumerate(reports):
+            if report.get('phase') != 'final_answer':
+                continue
+            plain = (report.get('text') or '').replace('**', '').replace('__', '')
+            if re.search(r'(?im)^\s*(?:verdict|вердикт|итог)\s*[:—-]|'
+                         r'^\s*(?:approve|approved|ready|request changes|do not approve|not approved)\b',
+                         plain):
+                candidates.append((report.get('event_line'), index, report, plain))
+        if not candidates:
+            continue
+        considered += 1
+        if native.get('thread_id') == child_id:
+            raise RuntimeError('Self-review is not an independent reviewer.')
+
+        events = [x for x in activities if x.get('agentThreadId') == child_id]
+        phases = {x.get('kind') for x in events}
+        if not {'started', 'completed'}.issubset(phases):
+            raise RuntimeError(f'Reviewer {child_id} has no observed completed lifecycle.')
+        # Select the most recent report; do not select any earlier approval.
+        candidates.sort(key=lambda x: (x[0] if isinstance(x[0], int) else -1, x[1]))
+        report_line, _, report, plain = candidates[-1]
+        text = report.get('text') or ''
+        starts = [x['event_line'] for x in events if x.get('kind') == 'started'
+                  and isinstance(x.get('event_line'), int)]
+        ends = [x['event_line'] for x in events if x.get('kind') == 'completed'
+                and isinstance(x.get('event_line'), int)]
+        bound = [(s, e) for s in starts for e in ends
+                 if isinstance(report_line, int) and s < report_line <= e
+                 and (after_event_line is None or s > after_event_line)]
+        if (strict or after_event_line is not None) and not bound:
+            raise RuntimeError(f'Reviewer {child_id} lacks current observed review chronology.')
+        if starts and isinstance(report_line, int) and max(starts) > report_line:
+            raise RuntimeError(f'Reviewer {child_id} has a newer unfinished review turn.')
+        review_start = max((s for s, _ in bound), default=None)
+
+        verdicts = re.findall(r'(?im)^\s*(?:verdict|вердикт|итог)\s*[:—-]\s*(.+)$', plain)
+        verdict = verdicts[-1].strip() if verdicts else next(
+            (line.strip() for line in plain.splitlines() if line.strip()), '')
+        negative = bool(re.search(
+            r"\b(?:not|don't|cannot|can't|reject(?:ed)?|conditional|pending|defer(?:red)?|"
+            r"block(?:ed|ing)?|if|once|after|when|provided|unless|until)\b|subject to|"
+            r"as long as|request changes|needs? changes|не\s+(?:готов|одобр|утверж|рекоменд)|"
+            r"при условии|если", verdict, re.I))
+        first_sentence = re.split(r'[.!](?:\s|$)', verdict, maxsplit=1)[0].strip().casefold()
+        ready = bool(re.fullmatch(r'ready\s*:\s*no critical,\s*important,?\s*or minor findings',
+                                  first_sentence))
+        approved = not negative and (first_sentence in {
+            'approve', 'approved', 'одобрено', 'одобряю'} or ready)
+        headings = re.findall(r'(?im)^\s{0,3}#{1,6}\s+(?:critical|important|blocker|'
+                              r'критическ\w*|важн\w*)\b[^\n]*$', plain)
+        severity_lines = re.findall(
+            r'(?im)^\s*(?:[-*]\s*)?(?:critical|important|blocker|критическ\w*|'
+            r'важн\w*)\s*:\s*(.*)$', plain)
+        unresolved = bool(headings) or any(
+            not re.fullmatch(r'(?:none|нет|0|no (?:issues|findings)|not found)[.!\s]*',
+                             line.strip(), re.I) for line in severity_lines)
+        if not approved or unresolved or len(text) < 100:
+            raise RuntimeError(f'Reviewer {child_id} has a current rejection or blocking finding.')
+
+        if strict:
+            match = re.search(r'(?m)^REVIEW_EVIDENCE_JSON:\s*(\{[^\n]+\})\s*$', text)
+            if not match:
+                raise RuntimeError('Strict review lacks machine-verifiable complete subject coverage.')
+            try:
+                receipt = json.loads(match.group(1))
+            except (ValueError, TypeError):
+                raise RuntimeError('Strict review contains invalid coverage evidence.') from None
+            if (not isinstance(receipt, dict)
+                    or receipt.get('subject') != expected_subject
+                    or receipt.get('covered_files') != files):
+                raise RuntimeError('Review coverage or current subject snapshot does not match.')
+            if receipt.get('unresolved_findings') != []:
+                raise RuntimeError('Review has unresolved or unknown blocking findings.')
+            older = [candidate for candidate in candidates[:-1] if re.search(
+                r'(?im)^\s*(?:verdict\s*[:—-]\s*)?(?:request changes|not approved|do not approve)',
+                candidate[3])]
+            if older and not receipt.get('resolved_findings'):
+                raise RuntimeError('Previous Request changes lacks explicit resolution evidence.')
+            receipt_ids = receipt.get('verified_test_receipts')
+            if not isinstance(receipt_ids, list) or not receipt_ids or len(set(receipt_ids)) != len(receipt_ids):
+                raise RuntimeError('Strict review lacks current test evidence identifiers.')
+            observed = native.get('observed_test_receipts', [])
+            for receipt_id in receipt_ids:
+                matches = [row for row in observed if row.get('id') == receipt_id]
+                if len(matches) != 1:
+                    raise RuntimeError('Review test receipt was not observed by the controller.')
+                test = matches[0]
+                if (test.get('files') != files or test.get('exit_code') != 0
+                        or not isinstance(test.get('tests_run'), int) or test['tests_run'] < 1
+                        or not test.get('command')
+                        or not isinstance(test.get('event_line'), int)
+                        or (after_event_line is not None and test['event_line'] <= after_event_line)
+                        or (review_start is not None and test['event_line'] >= review_start)):
+                    raise RuntimeError('Review test evidence is stale, unrelated, or incomplete.')
+        else:
+            scope = bool(re.search(r'plan|план|diff|файл|scope', text, re.I))
+            checks = bool(re.search(r'test|тест|провер', text, re.I))
+            if not scope or not checks:
+                raise RuntimeError(f'Reviewer {child_id} has incomplete unbound scope or test details.')
+
+        valid.append({'child_id': child_id, 'event_line': report_line,
+                      'reviewer_start_event_line': review_start, 'verdict': text,
+                      'subject_bound': strict})
+    if not considered or not valid:
         raise RuntimeError('No actual separate reviewer completion and substantive approval report observed.')
-    return {'passed':True,'reviewers':valid}
+    result = {'passed': True, 'reviewers': valid}
+    if strict:
+        result['subject'] = expected_subject
+    return result
 
 
 def _writes_path(item: dict, fixture: Path, relative: str) -> bool:
