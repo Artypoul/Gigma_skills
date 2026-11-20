@@ -1009,79 +1009,261 @@ def _evidence_command(command: str) -> str:
 
 
 def observed_skill_reads(items: list, expected: dict, fable: dict) -> dict:
-    targets = {name:row for name,row in expected.items()}
-    targets['fable5-codex'] = {**fable,'sha256':digest(Path(fable['path']))}
-    found, pages = {},{}
+    """Verify full skill bodies, not provider claims about body size or digest."""
+    targets = {name: row for name, row in expected.items()}
+    targets['fable5-codex'] = {**fable, 'sha256': digest(Path(fable['path']))}
+    found, pages, invalid = {}, {}, set()
+
+    def units(text: str) -> int:
+        # The read_skill provider uses JavaScript string offsets (UTF-16).
+        return len(text.encode('utf-16-le')) // 2
+
     for item in items:
-        if item.get('type')=='commandExecution':
-            command = _evidence_command(item.get('command',''))
-            variables=_path_variables(command)
-            command=re.sub(r'\$([\w]+)',lambda match:variables.get(match[1],match[0]),command)
-            output = item.get('aggregatedOutput','') or ''
-            if not re.search(r'get-content|\bcat\b|read_text|readfile|read-file|\btype\b',command):
+        if item.get('type') == 'commandExecution':
+            command = _evidence_command(item.get('command', ''))
+            variables = _path_variables(command)
+            command = re.sub(r'\$([\w]+)', lambda match: variables.get(match[1], match[0]), command)
+            output = item.get('aggregatedOutput', '') or ''
+            if not re.search(r'get-content|\bcat\b|read_text|readfile|read-file|\btype\b', command):
                 continue
-            for name,skill in targets.items():
-                expected_text=Path(skill['path']).read_text(encoding='utf-8-sig')
-                normalize=lambda text:re.sub(r'\r+\n','\n',text).replace('\ufeff','').strip()
-                complete=normalize(expected_text) in normalize(output)
-                # A later command may fail after this exact complete read. The
-                # complete source body and resolved candidate path are evidence;
-                # the aggregate shell exit status does not undo that earlier read.
+            for name, skill in targets.items():
+                expected_text = Path(skill['path']).read_text(encoding='utf-8-sig')
+                normalize = lambda text: re.sub(r'\r+\n', '\n', text).replace('\ufeff', '').strip()
+                complete = normalize(expected_text) in normalize(output)
+                # File-read fallback is an independent body-level proof, not
+                # an unverified claim from a summarized read_skill receipt.
                 if _normpath(skill['path']).casefold() in command and complete:
-                    found[name]={'event_line':item['event_line'],'path':skill['path'],'sha256':skill['sha256'],'method':'complete_file_read'}
-        elif item.get('type')=='mcpToolCall' and item.get('tool')=='read_skill' and item.get('status') in {'completed','success'}:
+                    found[name] = {'event_line': item['event_line'], 'path': skill['path'],
+                                   'sha256': skill['sha256'], 'method': 'complete_file_read'}
+        elif item.get('type') == 'mcpToolCall' and item.get('tool') == 'read_skill':
             try:
                 value = _tool_payload(item.get('result') or {})
-                skill = value.get('skill',{})
-                name = skill.get('name','').split(':')[-1]
-                if name not in targets or _normpath(skill.get('path',''))!=_normpath(targets[name]['path']) or value.get('sha256')!=targets[name]['sha256']:
+                skill = value.get('skill', {})
+                name = str(skill.get('name', '')).split(':')[-1]
+                if name not in targets:
                     continue
-                key = (name,value['sha256'])
-                pages.setdefault(key,[]).append((value.get('offset',0),len(value.get('content','')),value.get('total_chars'),item['event_line']))
-            except (ValueError,RuntimeError,KeyError):
-                continue
-    for (name,sha256),chunks in pages.items():
-        end,total=0,None
-        for offset,size,count,line in sorted(chunks):
-            if total is None:total=count
-            if count!=total or offset>end:break
-            end=max(end,offset+size)
-        if total is not None and end>=total:
-            found[name]={'event_line':chunks[-1][3],'path':targets[name]['path'],'sha256':sha256,'method':'complete_mcp_read'}
+                target = targets[name]
+                identity = ('id', 'path', 'plugin_id')
+                def attr(record, key):
+                    return record.get(key, record.get('pluginId') if key == 'plugin_id' else None)
+                correct_identity = (
+                    item.get('status') in {'completed', 'success'}
+                    and all(attr(target, key) is not None
+                            and attr(skill, key) == attr(target, key)
+                            for key in ('id', 'plugin_id'))
+                    and _normpath(skill.get('path', '')) == _normpath(target['path'])
+                    and value.get('sha256') == target.get('sha256')
+                    and value.get('partial') is False
+                    and type(value.get('warning_count')) is int
+                    and value['warning_count'] == 0
+                    and value.get('warnings', []) == []
+                    and isinstance(value.get('content'), str)
+                    and type(value.get('offset')) is int and value['offset'] >= 0
+                    and type(value.get('total_chars')) is int and value['total_chars'] > 0
+                    and isinstance(item.get('event_line'), int)
+                )
+                if fable.get('cwd') is not None:
+                    correct_identity = correct_identity and _normpath(value.get('cwd', '')) == _normpath(fable['cwd'])
+                if fable.get('catalog_sha256') is not None:
+                    correct_identity = correct_identity and value.get('catalog_sha256') == fable['catalog_sha256']
+                if not correct_identity:
+                    invalid.add(name)
+                    continue
+                pages.setdefault(name, []).append(value | {'event_line': item['event_line']})
+            except (ValueError, RuntimeError, KeyError, TypeError):
+                if isinstance(item.get('result'), dict):
+                    # A corrupt matching read must invalidate even an earlier
+                    # successful read, rather than being ignored in its favor.
+                    raw = item['result'].get('structuredContent', {})
+                    n = str(raw.get('skill', {}).get('name', '')).split(':')[-1]
+                    if n in targets:
+                        invalid.add(n)
+
+    for name, records in pages.items():
+        if name in invalid:
+            continue
+        target = targets[name]
+        path = Path(target['path'])
+        if not path.is_file() or path.is_symlink() or digest(path) != target['sha256']:
+            continue
+        try:
+            original_text = path.read_bytes().decode('utf-8-sig')
+        except (UnicodeError, OSError):
+            continue
+        expected_total = units(original_text)
+        # Reject partial, changing, overlapping and missing pages.
+        unique = {}
+        conflict = False
+        for page in records:
+            offset, content = page['offset'], page['content']
+            bound = offset + units(content)
+            if (page['total_chars'] != expected_total or bound > expected_total
+                    or (offset in unique and unique[offset] != content)):
+                conflict = True
+                break
+            unique[offset] = content
+            next_offset = page.get('next_offset', 'missing')
+            if next_offset != 'missing' and (
+                    next_offset != (bound if bound < expected_total else None)):
+                conflict = True
+                break
+        if conflict:
+            continue
+        cursor, collected = 0, []
+        for offset, chunk in sorted(unique.items()):
+            if offset != cursor or not chunk:
+                conflict = True
+                break
+            cursor += units(chunk)
+            collected.append(chunk)
+        if conflict or cursor != expected_total or ''.join(collected) != original_text:
+            continue
+        found[name] = {'event_line': max(page['event_line'] for page in records),
+                       'path': target['path'], 'sha256': target['sha256'],
+                       'method': 'complete_mcp_read', 'pages': len(unique),
+                       'content_verified': True}
+    for name in invalid:
+        found.pop(name, None)
     return found
 
 
-def review_evidence(native: dict, *, after_event_line: int | None = None) -> dict:
-    activities = native.get('native_subagent_activity',[])
-    valid=[]
-    for child_id,reports in native.get('child_reports',{}).items():
-        phases={x.get('kind') for x in activities if x.get('agentThreadId')==child_id}
-        finals=[x for x in reports if x.get('phase')=='final_answer' and len(x.get('text',''))>=100]
-        for report in finals:
-            text=report['text']
-            plain=text.replace('**','').replace('__','')
-            verdicts=re.findall(r'(?im)^\s*(?:verdict|вердикт|итог)\s*[:—-]\s*(.+)$',plain)
-            verdict=verdicts[-1].strip() if verdicts else next((line.strip() for line in plain.splitlines() if line.strip()),'')
-            negative=bool(re.search(r"\b(?:not|don't|cannot|can't|reject(?:ed)?|conditional|pending|defer(?:red)?|block(?:ed|ing)?|if|once|after|when|provided|unless|until)\b|subject to|as long as|request changes|needs? changes|не\s+(?:готов|одобр|утверж|рекоменд)|при условии|если",verdict,re.I))
-            first_sentence=re.split(r'[.!](?:\s|$)',verdict,maxsplit=1)[0].strip().casefold()
-            ready_no_findings=bool(re.fullmatch(r'ready\s*:\s*no critical,\s*important,?\s*or minor findings',first_sentence))
-            approved=not negative and (first_sentence in {'approve','approved','одобрено','одобряю'} or ready_no_findings)
-            severity_lines=re.findall(r'(?im)^\s*[-*]?\s*(?:critical|important|blocker|критическ\w*|важн\w*)\s*:\s*(.*)$',plain)
-            unresolved=any(not re.fullmatch(r'(?:none|нет|0|no (?:issues|findings)|not found)[.!\s]*',line.strip(),re.I) for line in severity_lines)
-            scope=bool(re.search(r'plan|план|diff|файл|scope',text,re.I))
-            validation=bool(re.search(r'test|тест|провер',text,re.I))
-            starts=[x['event_line'] for x in activities if x.get('agentThreadId')==child_id and x.get('kind')=='started' and isinstance(x.get('event_line'),int)]
-            completions=[x['event_line'] for x in activities if x.get('agentThreadId')==child_id and x.get('kind')=='completed' and isinstance(x.get('event_line'),int)]
-            report_line=report.get('event_line')
-            eligible=[line for line in starts if (after_event_line is None or line>after_event_line)
-                and isinstance(report_line,int) and line<report_line and any(end>=report_line for end in completions)]
-            fresh=after_event_line is None or bool(eligible)
-            if {'started','completed'}.issubset(phases) and approved and not unresolved and scope and validation and fresh:
-                valid.append({'child_id':child_id,'event_line':report.get('event_line'),
-                    'reviewer_start_event_line':max(eligible) if eligible else None,'verdict':text})
-    if not valid:
+def review_evidence(native: dict, *, after_event_line: int | None = None,
+                    expected_subject: dict | None = None) -> dict:
+    """Assess the last completed review by every observed reviewer.
+
+    A strict review binds its declared file coverage and verified test receipts
+    to the controller's already-frozen subject. Unbound legacy reports remain
+    diagnostic and must not be used as strict acceptance evidence.
+    """
+    strict = expected_subject is not None
+    if strict:
+        files = expected_subject.get('files') if isinstance(expected_subject, dict) else None
+        criteria = expected_subject.get('criteria_sha256') if isinstance(expected_subject, dict) else None
+        if (not isinstance(files, dict) or not files
+                or not all(isinstance(p, str) and p and isinstance(h, str)
+                           and re.fullmatch(r'[0-9a-fA-F]{64}', h) for p, h in files.items())
+                or not isinstance(criteria, str) or not re.fullmatch(r'[0-9a-fA-F]{64}', criteria)):
+            raise RuntimeError('Strict review requires a complete controller-owned subject snapshot.')
+        if len(files) != len(set(files)) or set(files) != set(sorted(files)):
+            raise RuntimeError('Review subject inventory is invalid.')
+
+    activities = native.get('native_subagent_activity', [])
+    valid = []
+    considered = 0
+    for child_id, reports in native.get('child_reports', {}).items():
+        # Implementer child reports are not reviewer decisions. A later actual
+        # reviewer rejection, however brief, must never be hidden by an old
+        # approval from the same reviewer or a different reviewer.
+        candidates = []
+        for index, report in enumerate(reports):
+            if report.get('phase') != 'final_answer':
+                continue
+            plain = (report.get('text') or '').replace('**', '').replace('__', '')
+            if re.search(r'(?im)^\s*(?:verdict|вердикт|итог)\s*[:—-]|'
+                         r'^\s*(?:approve|approved|ready|request changes|do not approve|not approved)\b',
+                         plain):
+                candidates.append((report.get('event_line'), index, report, plain))
+        if not candidates:
+            continue
+        considered += 1
+        if native.get('thread_id') == child_id:
+            raise RuntimeError('Self-review is not an independent reviewer.')
+
+        events = [x for x in activities if x.get('agentThreadId') == child_id]
+        phases = {x.get('kind') for x in events}
+        if not {'started', 'completed'}.issubset(phases):
+            raise RuntimeError(f'Reviewer {child_id} has no observed completed lifecycle.')
+        # Select the most recent report; do not select any earlier approval.
+        candidates.sort(key=lambda x: (x[0] if isinstance(x[0], int) else -1, x[1]))
+        report_line, _, report, plain = candidates[-1]
+        text = report.get('text') or ''
+        starts = [x['event_line'] for x in events if x.get('kind') == 'started'
+                  and isinstance(x.get('event_line'), int)]
+        ends = [x['event_line'] for x in events if x.get('kind') == 'completed'
+                and isinstance(x.get('event_line'), int)]
+        bound = [(s, e) for s in starts for e in ends
+                 if isinstance(report_line, int) and s < report_line <= e
+                 and (after_event_line is None or s > after_event_line)]
+        if (strict or after_event_line is not None) and not bound:
+            raise RuntimeError(f'Reviewer {child_id} lacks current observed review chronology.')
+        if starts and isinstance(report_line, int) and max(starts) > report_line:
+            raise RuntimeError(f'Reviewer {child_id} has a newer unfinished review turn.')
+        review_start = max((s for s, _ in bound), default=None)
+
+        verdicts = re.findall(r'(?im)^\s*(?:verdict|вердикт|итог)\s*[:—-]\s*(.+)$', plain)
+        verdict = verdicts[-1].strip() if verdicts else next(
+            (line.strip() for line in plain.splitlines() if line.strip()), '')
+        negative = bool(re.search(
+            r"\b(?:not|don't|cannot|can't|reject(?:ed)?|conditional|pending|defer(?:red)?|"
+            r"block(?:ed|ing)?|if|once|after|when|provided|unless|until)\b|subject to|"
+            r"as long as|request changes|needs? changes|не\s+(?:готов|одобр|утверж|рекоменд)|"
+            r"при условии|если", verdict, re.I))
+        first_sentence = re.split(r'[.!](?:\s|$)', verdict, maxsplit=1)[0].strip().casefold()
+        ready = bool(re.fullmatch(r'ready\s*:\s*no critical,\s*important,?\s*or minor findings',
+                                  first_sentence))
+        approved = not negative and (first_sentence in {
+            'approve', 'approved', 'одобрено', 'одобряю'} or ready)
+        headings = re.findall(r'(?im)^\s{0,3}#{1,6}\s+(?:critical|important|blocker|'
+                              r'критическ\w*|важн\w*)\b[^\n]*$', plain)
+        severity_lines = re.findall(
+            r'(?im)^\s*(?:[-*]\s*)?(?:critical|important|blocker|критическ\w*|'
+            r'важн\w*)\s*:\s*(.*)$', plain)
+        unresolved = bool(headings) or any(
+            not re.fullmatch(r'(?:none|нет|0|no (?:issues|findings)|not found)[.!\s]*',
+                             line.strip(), re.I) for line in severity_lines)
+        if not approved or unresolved or len(text) < 100:
+            raise RuntimeError(f'Reviewer {child_id} has a current rejection or blocking finding.')
+
+        if strict:
+            match = re.search(r'(?m)^REVIEW_EVIDENCE_JSON:\s*(\{[^\n]+\})\s*$', text)
+            if not match:
+                raise RuntimeError('Strict review lacks machine-verifiable complete subject coverage.')
+            try:
+                receipt = json.loads(match.group(1))
+            except (ValueError, TypeError):
+                raise RuntimeError('Strict review contains invalid coverage evidence.') from None
+            if (not isinstance(receipt, dict)
+                    or receipt.get('subject') != expected_subject
+                    or receipt.get('covered_files') != files):
+                raise RuntimeError('Review coverage or current subject snapshot does not match.')
+            if receipt.get('unresolved_findings') != []:
+                raise RuntimeError('Review has unresolved or unknown blocking findings.')
+            older = [candidate for candidate in candidates[:-1] if re.search(
+                r'(?im)^\s*(?:verdict\s*[:—-]\s*)?(?:request changes|not approved|do not approve)',
+                candidate[3])]
+            if older and not receipt.get('resolved_findings'):
+                raise RuntimeError('Previous Request changes lacks explicit resolution evidence.')
+            receipt_ids = receipt.get('verified_test_receipts')
+            if not isinstance(receipt_ids, list) or not receipt_ids or len(set(receipt_ids)) != len(receipt_ids):
+                raise RuntimeError('Strict review lacks current test evidence identifiers.')
+            observed = native.get('observed_test_receipts', [])
+            for receipt_id in receipt_ids:
+                matches = [row for row in observed if row.get('id') == receipt_id]
+                if len(matches) != 1:
+                    raise RuntimeError('Review test receipt was not observed by the controller.')
+                test = matches[0]
+                if (test.get('files') != files or test.get('exit_code') != 0
+                        or not isinstance(test.get('tests_run'), int) or test['tests_run'] < 1
+                        or not test.get('command')
+                        or not isinstance(test.get('event_line'), int)
+                        or (after_event_line is not None and test['event_line'] <= after_event_line)
+                        or (review_start is not None and test['event_line'] >= review_start)):
+                    raise RuntimeError('Review test evidence is stale, unrelated, or incomplete.')
+        else:
+            scope = bool(re.search(r'plan|план|diff|файл|scope', text, re.I))
+            checks = bool(re.search(r'test|тест|провер', text, re.I))
+            if not scope or not checks:
+                raise RuntimeError(f'Reviewer {child_id} has incomplete unbound scope or test details.')
+
+        valid.append({'child_id': child_id, 'event_line': report_line,
+                      'reviewer_start_event_line': review_start, 'verdict': text,
+                      'subject_bound': strict})
+    if not considered or not valid:
         raise RuntimeError('No actual separate reviewer completion and substantive approval report observed.')
-    return {'passed':True,'reviewers':valid}
+    result = {'passed': True, 'reviewers': valid}
+    if strict:
+        result['subject'] = expected_subject
+    return result
 
 
 def _writes_path(item: dict, fixture: Path, relative: str) -> bool:
