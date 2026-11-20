@@ -768,6 +768,141 @@ class CompleteSkillReadIntegrityRegressionTests(unittest.TestCase):
                              'complete_mcp_read')
 
 
+
+class TestInventoryFreshnessRegressionTests(unittest.TestCase):
+    """A6: a green string is not a test receipt for the final file inventory."""
+
+    def fixture(self, root):
+        fixture = root / 'fixture'
+        (fixture / 'tests').mkdir(parents=True)
+        (fixture / 'tests' / 'test_discounts.py').write_text(
+            "import unittest\nfrom discounts import apply_discount\n"
+            "class TestDiscount(unittest.TestCase):\n"
+            "    def test_discount(self): self.assertEqual(apply_discount(200,10),180)\n")
+        (fixture / 'discounts.py').write_text(
+            "def apply_discount(amount, percent): return amount - amount * percent / 100\n")
+        return fixture
+
+    @staticmethod
+    def inventory(fixture):
+        return {p.relative_to(fixture).as_posix(): c.digest(p)
+                for p in sorted(fixture.rglob('*.py')) if p.is_file()}
+
+    def items(self, fixture, *, green_output='Ran 1 test in 0.001s\n\nOK\n',
+              green_command='python -B -m unittest discover -s tests -v'):
+        source = self.inventory(fixture)
+        def write(path, line):
+            return {'type':'fileChange', 'event_line':line,
+                    'changes':[{'path':str(fixture / path)}]}
+        red = {'type':'commandExecution', 'event_line':2,
+               'command':'python -B -m unittest discover -s tests -v',
+               'exitCode':1, 'aggregatedOutput':'AssertionError: 190 != 180\nFAILED',
+               'controller_evidence': {'execution_id':'red-2', 'cwd':str(fixture),
+                   'event_line':2,'tests_run':1,'test_ids':['test_discounts.TestDiscount.test_discount'],
+                   'source_test_inventory':{'tests/test_discounts.py':source['tests/test_discounts.py']},
+                   'inventory':source}}
+        green = {'type':'commandExecution', 'event_line':4, 'command':green_command,
+                 'exitCode':0, 'aggregatedOutput':green_output,
+                 'controller_evidence': {'execution_id':'green-4', 'cwd':str(fixture),
+                     'event_line':4,'tests_run':1,
+                     'test_ids':['test_discounts.TestDiscount.test_discount'],
+                     'source_test_inventory':{'tests/test_discounts.py':source['tests/test_discounts.py']},
+                     'inventory':source}}
+        return [write('tests/test_discounts.py',1), red, write('discounts.py',3), green]
+
+    def test_fixture_inventory_detects_additions_removals_and_changes(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self.fixture(Path(td))
+            before = c.fixture_inventory(fixture, ['discounts.py', 'tests'])
+            self.assertEqual(set(before), {'discounts.py','tests/test_discounts.py'})
+            (fixture/'tests'/'test_new_case.py').write_text('def test_new(): pass\n')
+            added = c.fixture_inventory(fixture, ['discounts.py', 'tests'])
+            self.assertIn('tests/test_new_case.py', added)
+            (fixture/'tests'/'test_discounts.py').unlink()
+            removed = c.fixture_inventory(fixture, ['discounts.py', 'tests'])
+            self.assertNotIn('tests/test_discounts.py', removed)
+            self.assertNotEqual(before, added)
+            self.assertNotEqual(added, removed)
+            (fixture/'discounts.py').write_text('def changed(): pass\n')
+            self.assertNotEqual(removed, c.fixture_inventory(fixture,['discounts.py','tests']))
+            with self.assertRaises(ValueError):
+                c.fixture_inventory(fixture, ['../escape.py'])
+
+    def test_unrelated_suite_cannot_close_green(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self.fixture(Path(td))
+            unrelated = fixture / 'unrelated'
+            unrelated.mkdir()
+            (unrelated/'test_arithmetic.py').write_text(
+                'import unittest\nclass Arithmetic(unittest.TestCase):\n'
+                '    def test_add(self): self.assertEqual(1+1,2)\n')
+            proc = subprocess.run([sys.executable,'-B','-m','unittest','discover','-s',
+                                   'unrelated','-v'], cwd=fixture,text=True,capture_output=True)
+            self.assertEqual(proc.returncode,0,proc.stderr)
+            self.assertIn('Ran 1 test',proc.stderr)
+            items = self.items(fixture,green_output=proc.stdout + proc.stderr,
+                               green_command='python -B -m unittest discover -s unrelated -v')
+            with self.assertRaisesRegex(RuntimeError,'GREEN|test|target|evidence|suite'):
+                c.tdd_ordering('bug_fix',fixture,items)
+
+    def test_post_green_inventory_change_invalidates_evidence(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self.fixture(Path(td))
+            items = self.items(fixture)
+            old = c.digest(fixture/'discounts.py')
+            replacement = fixture/'replacement.py'
+            replacement.write_text('def apply_discount(amount, percent): return 100\n')
+            shutil.copyfile(replacement,fixture/'discounts.py')
+            self.assertNotEqual(old,c.digest(fixture/'discounts.py'))
+            items.append({'type':'commandExecution','event_line':5,'exitCode':0,
+                          'command':"shutil.copyfile('replacement.py', 'discounts.py')"})
+            with self.assertRaisesRegex(RuntimeError,'GREEN|inventory|changed|stale'):
+                c.tdd_ordering('bug_fix',fixture,items)
+
+    def test_tests_only_change_invalidates_green(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self.fixture(Path(td))
+            items = self.items(fixture)
+            test = fixture/'tests'/'test_discounts.py'
+            test.write_text(test.read_text() + '\n# modified after green\n')
+            items.append({'type':'commandExecution', 'event_line':5, 'exitCode':0,
+                          'command':"Path('tests/test_discounts.py').write_text('revised')"})
+            with self.assertRaisesRegex(RuntimeError,'GREEN|inventory|changed|stale'):
+                c.tdd_ordering('bug_fix',fixture,items)
+
+    def test_controller_receipts_are_required_for_tdd_proof(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self.fixture(Path(td))
+            items = self.items(fixture)
+            items[-1].pop('controller_evidence')
+            with self.assertRaisesRegex(RuntimeError,'GREEN|receipt|evidence|controller'):
+                c.tdd_ordering('bug_fix',fixture,items)
+
+    def test_read_only_hash_after_green_keeps_fresh_proof(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self.fixture(Path(td))
+            items = self.items(fixture)
+            items.append({'type':'commandExecution','event_line':5,'exitCode':0,
+                          'command':"Get-FileHash -LiteralPath 'discounts.py'"})
+            self.assertTrue(c.tdd_ordering('bug_fix',fixture,items)['passed'])
+
+    @unittest.skipUnless(shutil.which('pwsh'), 'real PowerShell runner not installed')
+    def test_copy_item_after_green_invalidates_evidence_windows(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self.fixture(Path(td))
+            items = self.items(fixture)
+            (fixture/'replacement.py').write_text(
+                'def apply_discount(amount,percent): return 42\n')
+            result = subprocess.run(['pwsh','-NoProfile','-Command',
+                "Copy-Item -LiteralPath 'replacement.py' -Destination 'discounts.py' -Force"],
+                cwd=fixture, capture_output=True, text=True)
+            self.assertEqual(result.returncode,0,result.stderr)
+            items.append({'type':'commandExecution','event_line':5,'exitCode':0,
+                          'command':"Copy-Item -LiteralPath 'replacement.py' -Destination 'discounts.py' -Force"})
+            with self.assertRaisesRegex(RuntimeError,'GREEN|inventory|changed|stale'):
+                c.tdd_ordering('bug_fix',fixture,items)
+
+
 class ImmutableBaselineAcceptanceTests(unittest.TestCase):
     """Run immutable controller-owned tests against candidate implementations."""
 
