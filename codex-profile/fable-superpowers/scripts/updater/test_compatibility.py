@@ -394,15 +394,34 @@ class CompatibilityUnitTests(unittest.TestCase):
 
     def test_complete_mcp_pagination_is_required(self):
         with tempfile.TemporaryDirectory() as td:
-            fable=Path(td)/'FABLE.md'
+            root = Path(td)
+            fable = root / 'FABLE.md'
             fable.write_text(skill_text('fable5-codex'))
-            target={'path':'C:/cache/7.0.2/brainstorming/SKILL.md','sha256':'a'*64}
-            def page(offset,text):
-                return {'type':'mcpToolCall','tool':'read_skill','status':'completed','event_line':offset+1,'result':{'structuredContent':{'skill':{'name':'superpowers:brainstorming','path':target['path']},'sha256':target['sha256'],'offset':offset,'content':text,'total_chars':6}}}
-            first=page(0,'abc')
-            self.assertNotIn('brainstorming',c.observed_skill_reads([first],{'brainstorming':target},{'path':str(fable)}))
-            loaded=c.observed_skill_reads([first,page(3,'def')],{'brainstorming':target},{'path':str(fable)})
-            self.assertEqual(loaded['brainstorming']['method'],'complete_mcp_read')
+            skill = root / 'superpowers' / 'brainstorming' / 'SKILL.md'
+            skill.parent.mkdir(parents=True)
+            skill.write_bytes(b'abcdef')
+            target = {'id': 'selected:brainstorming', 'plugin_id': 'superpowers@staged',
+                      'path': str(skill), 'sha256': c.digest(skill)}
+            fable_record = {'path': str(fable), 'cwd': str(root),
+                            'catalog_sha256': 'f' * 64}
+            def page(offset, text):
+                return {'type': 'mcpToolCall', 'tool': 'read_skill', 'status': 'completed',
+                        'event_line': offset + 1, 'result': {'structuredContent': {
+                            'skill': {'id': target['id'], 'plugin_id': target['plugin_id'],
+                                      'name': 'superpowers:brainstorming', 'path': target['path']},
+                            'sha256': target['sha256'], 'offset': offset,
+                            'content': text, 'total_chars': 6, 'partial': False,
+                            'warning_count': 0, 'warnings': [], 'cwd': str(root),
+                            'catalog_sha256': fable_record['catalog_sha256'],
+                            'next_offset': offset + len(text) if offset + len(text) < 6 else None}}}
+            first = page(0, 'abc')
+            self.assertNotIn('brainstorming', c.observed_skill_reads(
+                [first], {'brainstorming': target}, fable_record))
+            loaded = c.observed_skill_reads(
+                [first, page(3, 'def')], {'brainstorming': target}, fable_record)
+            self.assertEqual(loaded['brainstorming']['method'], 'complete_mcp_read')
+            self.assertTrue(loaded['brainstorming']['content_verified'])
+
 
     def test_receipt_or_empty_wait_is_not_independent_review(self):
         with self.assertRaisesRegex(RuntimeError,'separate reviewer'):
@@ -551,6 +570,203 @@ class CompatibilityUnitTests(unittest.TestCase):
     def test_inventory_rejects_traversal_and_normalizes_case(self):
         self.assertEqual(c._inventory_map([{'Path':'skills\\x\\SKILL.md','SHA256':'A'*64}]),{'skills/x/SKILL.md':'a'*64})
         with self.assertRaises(ValueError):c._inventory_map([{'path':'../escape','sha256':'a'*64}])
+
+
+class CurrentSubjectReviewRegressionTests(unittest.TestCase):
+    """A3: old approvals and partial scope must never close the current gate."""
+
+    @staticmethod
+    def report(text, line, *, evidence=None):
+        if evidence is not None:
+            text += "\n" + "REVIEW_EVIDENCE_JSON: " + json.dumps(evidence, sort_keys=True)
+        return {'phase': 'final_answer', 'event_line': line, 'text': text}
+
+    @staticmethod
+    def reviewer(child, start, end):
+        return [{'agentThreadId': child, 'kind': 'started', 'event_line': start},
+                {'agentThreadId': child, 'kind': 'completed', 'event_line': end}]
+
+    @staticmethod
+    def subject():
+        files = {name: key * 64 for name, key in (
+            ('APPROVED_PLAN.md', 'a'), ('invoice_cli.py', 'b'),
+            ('invoice_helpers.py', 'c'), ('tests/test_invoice_cli.py', 'd'),
+            ('tests/test_invoice_helpers.py', 'e'))}
+        return {'files': files, 'criteria_sha256': 'f' * 64}
+
+    def test_later_rejection_and_other_reviewer_blocker_remain_open(self):
+        approved = self.report(
+            'Verdict: Approve.\nReviewed the full approved plan, all final source files and diffs and current independent test outputs; no findings remain.', 42)
+        rejected = self.report(
+            'Verdict: Request changes.\nReviewed the full approved plan and implementation diff and tests; Important: invoice validation remains broken and unresolved.', 55)
+        native = {'native_subagent_activity': self.reviewer('r1', 30, 45) + self.reviewer('r1', 50, 60),
+                  'child_reports': {'r1': [approved, rejected]}}
+        with self.assertRaises(RuntimeError):
+            c.review_evidence(native, after_event_line=25)
+        native = {'native_subagent_activity': self.reviewer('r1', 30, 45) + self.reviewer('r2', 31, 46),
+                  'child_reports': {'r1': [rejected], 'r2': [approved]}}
+        with self.assertRaises(RuntimeError):
+            c.review_evidence(native, after_event_line=25)
+
+    def test_markdown_important_heading_blocks_approval(self):
+        text = ('Verdict: Approve.\nReviewed the full plan and implementation diff and verified tests.\n'
+                '#### Important (Should Fix)\n- The input validation still accepts invalid currency.')
+        native = {'native_subagent_activity': self.reviewer('r', 30, 45),
+                  'child_reports': {'r': [self.report(text, 42)]}}
+        with self.assertRaises(RuntimeError):
+            c.review_evidence(native, after_event_line=25)
+
+    def test_review_excluding_production_files_is_not_complete(self):
+        subject = self.subject()
+        record = {'subject': subject, 'covered_files': {'APPROVED_PLAN.md': subject['files']['APPROVED_PLAN.md']},
+                  'unresolved_findings': [], 'verified_test_receipts': ['current-suite']}
+        text = ('Verdict: Approve.\nScope: Reviewed the plan only; invoice_cli.py and '
+                'invoice_helpers.py were not reviewed. Tests were not inspected.')
+        native = {'native_subagent_activity': self.reviewer('r', 30, 45),
+                  'child_reports': {'r': [self.report(text, 42, evidence=record)]}}
+        with self.assertRaises(RuntimeError):
+            c.review_evidence(native, after_event_line=25, expected_subject=subject)
+
+    def test_review_snapshot_and_current_test_receipts_required(self):
+        subject = self.subject()
+        record = {'subject': subject, 'covered_files': subject['files'],
+                  'unresolved_findings': [], 'verified_test_receipts': ['current-suite']}
+        text = ('Verdict: Approve.\nScope: I reviewed the complete implementation and test diff '
+                'against the approved plan and verified the recorded test command, exit and '
+                'inventory. Tests were not rerun by me; no blocking findings remain.')
+        native = {'native_subagent_activity': self.reviewer('r', 30, 45),
+                  'child_reports': {'r': [self.report(text, 42, evidence=record)]}}
+        with self.assertRaises(RuntimeError):
+            c.review_evidence(native, after_event_line=25, expected_subject=subject)
+        native['observed_test_receipts'] = [{
+            'id': 'current-suite', 'event_line': 28, 'command': 'python -B -m unittest discover -s tests -v',
+            'exit_code': 0, 'tests_run': 8, 'files': subject['files']}]
+        verified = c.review_evidence(native, after_event_line=25, expected_subject=subject)
+        self.assertTrue(verified['passed'])
+        self.assertEqual(verified['subject'], subject)
+        self.assertEqual(verified['reviewers'][0]['child_id'], 'r')
+        changed = copy.deepcopy(native)
+        changed['observed_test_receipts'][0]['files']['invoice_cli.py'] = '0' * 64
+        with self.assertRaises(RuntimeError):
+            c.review_evidence(changed, after_event_line=25, expected_subject=subject)
+
+    def test_fresh_full_approval_can_supersede_previous_rejection(self):
+        subject = self.subject()
+        record = {'subject': subject, 'covered_files': subject['files'],
+                  'unresolved_findings': [], 'resolved_findings': ['invalid-currency'],
+                  'verified_test_receipts': ['current-suite']}
+        rejected = self.report(
+            'Verdict: Request changes.\nScope: the implementation and tests need a fix. Important: invalid-currency.', 42)
+        approval = self.report(
+            'Verdict: Approve.\nScope: all implementation and test files were reviewed. '
+            'The prior invalid-currency finding is resolved. Verified current test evidence.', 55, evidence=record)
+        native = {'native_subagent_activity': self.reviewer('r', 30, 45) + self.reviewer('r', 50, 60),
+                  'child_reports': {'r': [rejected, approval]},
+                  'observed_test_receipts': [{'id': 'current-suite', 'event_line': 49,
+                      'command': 'python -B -m unittest discover -s tests -v', 'exit_code': 0,
+                      'tests_run': 8, 'files': subject['files']}]}
+        self.assertTrue(c.review_evidence(native, after_event_line=25, expected_subject=subject)['passed'])
+
+
+
+class CompleteSkillReadIntegrityRegressionTests(unittest.TestCase):
+    """A4: provider metadata must not replace the actual skill body."""
+
+    def fixture(self, root, *, body='abcdef'):
+        fable = root / 'fable' / 'SKILL.md'
+        fable.parent.mkdir()
+        fable.write_text(skill_text('fable5-codex'), encoding='utf-8')
+        skill = root / 'superpowers' / 'brainstorming' / 'SKILL.md'
+        skill.parent.mkdir(parents=True)
+        skill.write_bytes(body.encode('utf-8'))
+        target = {'id': 'catalog:brainstorming', 'plugin_id': 'superpowers@candidate',
+                  'path': str(skill), 'sha256': c.digest(skill)}
+        source = {'path': str(fable), 'cwd': str(root), 'catalog_sha256': 'f' * 64}
+        return skill, target, source
+
+    @staticmethod
+    def page(target, source, offset, body, *, total=None, line=20, **changes):
+        value = {'skill': {'id': target['id'], 'plugin_id': target['plugin_id'],
+                            'name': 'superpowers:brainstorming', 'path': target['path']},
+                 'sha256': target['sha256'], 'offset': offset, 'content': body,
+                 'total_chars': len(body) if total is None else total, 'partial': False,
+                 'warning_count': 0, 'warnings': [],
+                 'cwd': source['cwd'], 'catalog_sha256': source['catalog_sha256']}
+        value.update(changes)
+        return {'type': 'mcpToolCall', 'tool': 'read_skill', 'status': 'completed',
+                'event_line': line, 'result': {'structuredContent': value}}
+
+    def read(self, items, target, source):
+        return c.observed_skill_reads(items, {'brainstorming': target}, source)
+
+    def test_claimed_hash_cannot_replace_actual_body(self):
+        with tempfile.TemporaryDirectory() as td:
+            skill, target, source = self.fixture(Path(td))
+            # Exact A4 false positive: one warned byte claims the full source hash.
+            forged = self.page(target, source, 0, 'x', total=1, partial=True,
+                               warning_count=1, warnings=['TRUNCATED'])
+            self.assertNotIn('brainstorming', self.read([forged], target, source))
+            # No warning but the same claimed hash still does not prove the bytes.
+            forged = self.page(target, source, 0, 'xxxxxx', total=6)
+            self.assertNotIn('brainstorming', self.read([forged], target, source))
+
+    def test_partial_or_warned_mcp_read_is_not_complete(self):
+        with tempfile.TemporaryDirectory() as td:
+            _, target, source = self.fixture(Path(td))
+            first = self.page(target, source, 0, 'abc', total=6)
+            for details in [{'partial': True}, {'warning_count': 1},
+                            {'warnings': ['SOURCE_UNVERIFIED']}]:
+                with self.subTest(details=details):
+                    bad = self.page(target, source, 3, 'def', total=6, **details)
+                    self.assertNotIn('brainstorming', self.read([first, bad], target, source))
+
+    def test_foreign_identity_or_project_is_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            _, target, source = self.fixture(Path(td))
+            good = self.page(target, source, 0, 'abcdef', total=6)
+            variants = [
+                lambda x: x['skill'].update(id='other'),
+                lambda x: x['skill'].update(plugin_id='foreign@plugin'),
+                lambda x: x.update(cwd='C:/foreign-project'),
+                lambda x: x.update(catalog_sha256='0' * 64)]
+            for mutate in variants:
+                with self.subTest(mutate=variants.index(mutate)):
+                    item = copy.deepcopy(good)
+                    mutate(item['result']['structuredContent'])
+                    self.assertNotIn('brainstorming', self.read([item], target, source))
+
+    def test_conflicting_pages_are_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            _, target, source = self.fixture(Path(td))
+            first = self.page(target, source, 0, 'abc', total=6)
+            for second in [
+                self.page(target, source, 2, 'cdef', total=6),
+                self.page(target, source, 3, 'def', total=7),
+                self.page(target, source, 3, 'def', total=6, sha256='0' * 64)]:
+                with self.subTest(second=second):
+                    self.assertNotIn('brainstorming', self.read([first, second], target, source))
+
+    def test_late_warned_page_invalidates_earlier_complete_read(self):
+        with tempfile.TemporaryDirectory() as td:
+            _, target, source = self.fixture(Path(td))
+            complete = self.page(target, source, 0, 'abcdef', total=6)
+            warned = self.page(target, source, 0, 'x', total=1, partial=True, warning_count=1, line=21)
+            self.assertNotIn('brainstorming', self.read([complete, warned], target, source))
+
+    def test_valid_paginated_bom_crlf_read_is_complete(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _, target, source = self.fixture(root)
+            skill = Path(target['path'])
+            skill.write_bytes(b'\xef\xbb\xbfalpha\r\n' + 'beta\r\n'.encode('utf-8'))
+            target['sha256'] = c.digest(skill)
+            body = skill.read_bytes().decode('utf-8-sig')
+            split = 4
+            pages = [self.page(target, source, 0, body[:split], total=len(body)),
+                     self.page(target, source, split, body[split:], total=len(body), line=21)]
+            self.assertEqual(self.read(pages, target, source)['brainstorming']['method'],
+                             'complete_mcp_read')
+
 
 class ImmutableBaselineAcceptanceTests(unittest.TestCase):
     """Run immutable controller-owned tests against candidate implementations."""
