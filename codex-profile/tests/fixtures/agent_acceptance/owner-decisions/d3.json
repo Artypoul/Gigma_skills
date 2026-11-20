@@ -1,0 +1,38 @@
+{
+  "id": "D3",
+  "prompt": "Synthetic owner-decision case D3: Cancel only one of three agreed requirements. Preserve all specified constraints; do not infer missing permissions.",
+  "turns": [
+    "Proceed with A, B, C.",
+    "Cancel B only; keep A and C."
+  ],
+  "criteria": {
+    "cancel_B": "cancelled",
+    "preserve_A": "satisfied",
+    "preserve_C": "satisfied"
+  },
+  "mandatory": [
+    "preserve_A",
+    "preserve_C"
+  ],
+  "allowed_paths": [
+    "docs/owner-decisions/d3-artifact.md"
+  ],
+  "preserve": {
+    "A": "required",
+    "C": "required"
+  },
+  "cancelled": [
+    "B"
+  ],
+  "locked_facts": {},
+  "forbid_keys": [],
+  "expected_status": "passed",
+  "fixture_scope": "offline_only",
+  "review_history": [
+    {
+      "event_line": 10,
+      "verdict": "APPROVE",
+      "blocking": []
+    }
+  ]
+}
