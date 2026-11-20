@@ -14,7 +14,7 @@ Pins and canonical skills were **not** changed. Therefore no new manifest versio
 
 - [#79 / A1](https://github.com/Artypoul/Gigma_skills/pull/79) merged. Standard installation deduplication and regressions.
 - [#80 / A2](https://github.com/Artypoul/Gigma_skills/pull/80) merged. Immutable baseline implementation unfortunately left the main branch with a syntax error in updater `compatibility.py`.
-- [#81 / syntax recovery](https://github.com/Artypoul/Gigma_skills/pull/81) remains **open Draft** at `0a4dc2f07d53341496c1d4d030c3cad9f00892a1`, deletes 936 duplicated trailing lines. Six CI jobs passed on Actions run [44567679260](https://github.com/Artypoul/Gigma_skills/actions/runs/44567679260). No independent reviewer result was observed. The repair is **not merged into main**.
+- [#81 / syntax recovery](https://github.com/Artypoul/Gigma_skills/pull/81) is **open, non-draft, not merged** at `0a4dc2f07d53341496c1d4d030c3cad9f00892a1`, deletes 936 duplicated trailing lines. Six CI jobs passed on Actions run [44567679260](https://github.com/Artypoul/Gigma_skills/actions/runs/44567679260). Codex review attempted on 2026-11-20 but was **not completed because of code-review usage limits** ([review summary](https://github.com/Artypoul/Gigma_skills/pull/81#issuecomment-7028562504), [quota notice](https://github.com/Artypoul/Gigma_skills/pull/81#issuecomment-7028563022)); no completed independent approval or substantiated inline code finding was provided. The repair is **not merged into main**.
 
 All subsequent PRs below form a **stacked chain** above #81. They must not be treated as independently mergeable into the broken main.
 
@@ -52,7 +52,7 @@ The Linux `validate` job also executes `python validate_plugin.py`, marketplace 
 ## Open requirements and blockers
 
 1. **Broken main** until #81 is independently reviewed and explicitly authorized for merge. No merge, deployment, force-push or auto-merge was done.
-2. **Independent review:** required `gpt-6.1-sol/xhigh` subagent is unavailable in this connected GitHub-only host. The current PR code has not been approved by a separate actual reviewer. No self-review is represented as independent.
+2. **Independent review:** required `gpt-6.1-sol/xhigh` subagent is unavailable in this connected GitHub-only host. The automated review attempted on #81 was blocked by the account's review usage limit; a failed-to-complete review is not a passed review and not in itself a substantiated code defect. The current PR code has not been approved by a separate actual reviewer. No self-review is represented as independent.
 3. **Real installed Fable/Superpowers activation, real app-server agent trials and real semantic evaluation:** not available here. Therefore all live acceptance columns are open; synthetic D1–D12, mock review receipts and CI correctness do **not** demonstrate live agent behavior.
 4. **G1 Task Acceptance delivery choice:** canonical `plugins/development-workflow/skills/agent-session-execution/SKILL.md` exists. Installer and assets were inspected but owner has not selected the delivery contract. No install, auto-switch, enabled/disabled preference mutation, dependency change or speculative route selected.
 5. **G3 canonical handoff wording:** optional-risk-only `ready` clarification requires its expressly approved scope. Canonical skill, both manifests and `.codex` mirror were left unchanged; offline gates alone are not permission to rewrite them.
