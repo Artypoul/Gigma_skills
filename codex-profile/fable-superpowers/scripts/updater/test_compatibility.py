@@ -394,15 +394,34 @@ class CompatibilityUnitTests(unittest.TestCase):
 
     def test_complete_mcp_pagination_is_required(self):
         with tempfile.TemporaryDirectory() as td:
-            fable=Path(td)/'FABLE.md'
+            root = Path(td)
+            fable = root / 'FABLE.md'
             fable.write_text(skill_text('fable5-codex'))
-            target={'path':'C:/cache/7.0.2/brainstorming/SKILL.md','sha256':'a'*64}
-            def page(offset,text):
-                return {'type':'mcpToolCall','tool':'read_skill','status':'completed','event_line':offset+1,'result':{'structuredContent':{'skill':{'name':'superpowers:brainstorming','path':target['path']},'sha256':target['sha256'],'offset':offset,'content':text,'total_chars':6}}}
-            first=page(0,'abc')
-            self.assertNotIn('brainstorming',c.observed_skill_reads([first],{'brainstorming':target},{'path':str(fable)}))
-            loaded=c.observed_skill_reads([first,page(3,'def')],{'brainstorming':target},{'path':str(fable)})
-            self.assertEqual(loaded['brainstorming']['method'],'complete_mcp_read')
+            skill = root / 'superpowers' / 'brainstorming' / 'SKILL.md'
+            skill.parent.mkdir(parents=True)
+            skill.write_bytes(b'abcdef')
+            target = {'id': 'selected:brainstorming', 'plugin_id': 'superpowers@staged',
+                      'path': str(skill), 'sha256': c.digest(skill)}
+            fable_record = {'path': str(fable), 'cwd': str(root),
+                            'catalog_sha256': 'f' * 64}
+            def page(offset, text):
+                return {'type': 'mcpToolCall', 'tool': 'read_skill', 'status': 'completed',
+                        'event_line': offset + 1, 'result': {'structuredContent': {
+                            'skill': {'id': target['id'], 'plugin_id': target['plugin_id'],
+                                      'name': 'superpowers:brainstorming', 'path': target['path']},
+                            'sha256': target['sha256'], 'offset': offset,
+                            'content': text, 'total_chars': 6, 'partial': False,
+                            'warning_count': 0, 'warnings': [], 'cwd': str(root),
+                            'catalog_sha256': fable_record['catalog_sha256'],
+                            'next_offset': offset + len(text) if offset + len(text) < 6 else None}}}
+            first = page(0, 'abc')
+            self.assertNotIn('brainstorming', c.observed_skill_reads(
+                [first], {'brainstorming': target}, fable_record))
+            loaded = c.observed_skill_reads(
+                [first, page(3, 'def')], {'brainstorming': target}, fable_record)
+            self.assertEqual(loaded['brainstorming']['method'], 'complete_mcp_read')
+            self.assertTrue(loaded['brainstorming']['content_verified'])
+
 
     def test_receipt_or_empty_wait_is_not_independent_review(self):
         with self.assertRaisesRegex(RuntimeError,'separate reviewer'):
