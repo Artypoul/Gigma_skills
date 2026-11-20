@@ -552,6 +552,103 @@ class CompatibilityUnitTests(unittest.TestCase):
         self.assertEqual(c._inventory_map([{'Path':'skills\\x\\SKILL.md','SHA256':'A'*64}]),{'skills/x/SKILL.md':'a'*64})
         with self.assertRaises(ValueError):c._inventory_map([{'path':'../escape','sha256':'a'*64}])
 
+
+class CurrentSubjectReviewRegressionTests(unittest.TestCase):
+    """A3: old approvals and partial scope must never close the current gate."""
+
+    @staticmethod
+    def report(text, line, *, evidence=None):
+        if evidence is not None:
+            text += "\n" + "REVIEW_EVIDENCE_JSON: " + json.dumps(evidence, sort_keys=True)
+        return {'phase': 'final_answer', 'event_line': line, 'text': text}
+
+    @staticmethod
+    def reviewer(child, start, end):
+        return [{'agentThreadId': child, 'kind': 'started', 'event_line': start},
+                {'agentThreadId': child, 'kind': 'completed', 'event_line': end}]
+
+    @staticmethod
+    def subject():
+        files = {name: key * 64 for name, key in (
+            ('APPROVED_PLAN.md', 'a'), ('invoice_cli.py', 'b'),
+            ('invoice_helpers.py', 'c'), ('tests/test_invoice_cli.py', 'd'),
+            ('tests/test_invoice_helpers.py', 'e'))}
+        return {'files': files, 'criteria_sha256': 'f' * 64}
+
+    def test_later_rejection_and_other_reviewer_blocker_remain_open(self):
+        approved = self.report(
+            'Verdict: Approve.\nReviewed full plan and diff and verified current tests without open findings.', 42)
+        rejected = self.report(
+            'Verdict: Request changes.\nReviewed full plan and diff; Important: invoice validation remains broken in tests.', 55)
+        native = {'native_subagent_activity': self.reviewer('r1', 30, 45) + self.reviewer('r1', 50, 60),
+                  'child_reports': {'r1': [approved, rejected]}}
+        with self.assertRaises(RuntimeError):
+            c.review_evidence(native, after_event_line=25)
+        native = {'native_subagent_activity': self.reviewer('r1', 30, 45) + self.reviewer('r2', 31, 46),
+                  'child_reports': {'r1': [rejected], 'r2': [approved]}}
+        with self.assertRaises(RuntimeError):
+            c.review_evidence(native, after_event_line=25)
+
+    def test_markdown_important_heading_blocks_approval(self):
+        text = ('Verdict: Approve.\nReviewed the full plan and implementation diff and verified tests.\n'
+                '#### Important (Should Fix)\n- The input validation still accepts invalid currency.')
+        native = {'native_subagent_activity': self.reviewer('r', 30, 45),
+                  'child_reports': {'r': [self.report(text, 42)]}}
+        with self.assertRaises(RuntimeError):
+            c.review_evidence(native, after_event_line=25)
+
+    def test_review_excluding_production_files_is_not_complete(self):
+        subject = self.subject()
+        record = {'subject': subject, 'covered_files': {'APPROVED_PLAN.md': subject['files']['APPROVED_PLAN.md']},
+                  'unresolved_findings': [], 'verified_test_receipts': ['current-suite']}
+        text = ('Verdict: Approve.\nScope: Reviewed the plan only; invoice_cli.py and '
+                'invoice_helpers.py were not reviewed. Tests were not inspected.')
+        native = {'native_subagent_activity': self.reviewer('r', 30, 45),
+                  'child_reports': {'r': [self.report(text, 42, evidence=record)]}}
+        with self.assertRaises(RuntimeError):
+            c.review_evidence(native, after_event_line=25, expected_subject=subject)
+
+    def test_review_snapshot_and_current_test_receipts_required(self):
+        subject = self.subject()
+        record = {'subject': subject, 'covered_files': subject['files'],
+                  'unresolved_findings': [], 'verified_test_receipts': ['current-suite']}
+        text = ('Verdict: Approve.\nScope: I reviewed the complete implementation and test diff '
+                'against the approved plan and verified the recorded test command, exit and '
+                'inventory. Tests were not rerun by me; no blocking findings remain.')
+        native = {'native_subagent_activity': self.reviewer('r', 30, 45),
+                  'child_reports': {'r': [self.report(text, 42, evidence=record)]}}
+        with self.assertRaises(RuntimeError):
+            c.review_evidence(native, after_event_line=25, expected_subject=subject)
+        native['observed_test_receipts'] = [{
+            'id': 'current-suite', 'event_line': 28, 'command': 'python -B -m unittest discover -s tests -v',
+            'exit_code': 0, 'tests_run': 8, 'files': subject['files']}]
+        verified = c.review_evidence(native, after_event_line=25, expected_subject=subject)
+        self.assertTrue(verified['passed'])
+        self.assertEqual(verified['subject'], subject)
+        self.assertEqual(verified['reviewers'][0]['child_id'], 'r')
+        changed = copy.deepcopy(native)
+        changed['observed_test_receipts'][0]['files']['invoice_cli.py'] = '0' * 64
+        with self.assertRaises(RuntimeError):
+            c.review_evidence(changed, after_event_line=25, expected_subject=subject)
+
+    def test_fresh_full_approval_can_supersede_previous_rejection(self):
+        subject = self.subject()
+        record = {'subject': subject, 'covered_files': subject['files'],
+                  'unresolved_findings': [], 'resolved_findings': ['invalid-currency'],
+                  'verified_test_receipts': ['current-suite']}
+        rejected = self.report(
+            'Verdict: Request changes.\nScope: the implementation and tests need a fix. Important: invalid-currency.', 42)
+        approval = self.report(
+            'Verdict: Approve.\nScope: all implementation and test files were reviewed. '
+            'The prior invalid-currency finding is resolved. Verified current test evidence.', 55, evidence=record)
+        native = {'native_subagent_activity': self.reviewer('r', 30, 45) + self.reviewer('r', 50, 60),
+                  'child_reports': {'r': [rejected, approval]},
+                  'observed_test_receipts': [{'id': 'current-suite', 'event_line': 49,
+                      'command': 'python -B -m unittest discover -s tests -v', 'exit_code': 0,
+                      'tests_run': 8, 'files': subject['files']}]}
+        self.assertTrue(c.review_evidence(native, after_event_line=25, expected_subject=subject)['passed'])
+
+
 class ImmutableBaselineAcceptanceTests(unittest.TestCase):
     """Run immutable controller-owned tests against candidate implementations."""
 
