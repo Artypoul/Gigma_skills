@@ -127,7 +127,7 @@ class RpcError(RuntimeError):
 
 class AppServer:
     def __init__(self, cwd: Path, out: Path, deadline: float, codex_home: Path | None = None,
-                 codex_bin=None, answers=None):
+                 codex_bin=None, answers=None, watch_paths=None):
         codex = resolve_codex(codex_bin)
         env = os.environ.copy()
         env.pop("CODEX_THREAD_ID", None)
@@ -143,6 +143,10 @@ class AppServer:
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
         self.deadline = deadline
+        self.cwd = Path(cwd).resolve(strict=True)
+        self.watch_paths = [Path(path) for path in (watch_paths or [])]
+        self.last_inventory = {}
+        self.observed_execution_evidence = []
         self.messages = queue.Queue()
         self.responses = {}
         self.next_id = 1
@@ -277,6 +281,58 @@ class AppServer:
         self._record(response, "client")
         self._write(response)
 
+    def _capture_execution(self, item, line):
+        """Observe fixture bytes at the boundary of a completed native item.
+
+        The receipt comes from the controller, never from agent answer text.
+        Unknown tool/output shapes produce incomplete evidence, not a pass.
+        """
+        watched = {}
+        root = self.cwd
+        for selected in self.watch_paths:
+            if not selected.exists():
+                continue
+            try:
+                # Keep the input path's lexical prefix; Windows runner HOME
+                # may use a short 8.3 alias while resolved files use the long
+                # profile name. Compare children against the resolved watched
+                # root, not the short name of the original fixture directory.
+                if selected.is_symlink():
+                    raise ValueError('Observed test path is a symbolic link.')
+                prefix = selected.absolute().relative_to(root)
+                resolved = selected.resolve(strict=True)
+            except ValueError:
+                raise ValueError('Observed test path escaped the fixture.')
+            for path, value in file_inventory([str(selected)]).items():
+                child = Path(path).relative_to(resolved) if selected.is_dir() else Path()
+                relative = (prefix / child).as_posix()
+                watched[relative] = value
+        watched = dict(sorted(watched.items()))
+        previous = self.last_inventory
+        changed = sorted(p for p in set(previous) | set(watched)
+                         if previous.get(p) != watched.get(p))
+        self.last_inventory = watched
+
+        output = item.get('aggregatedOutput') or ''
+        count = re.search(r'\bRan\s+(\d+)\s+tests?\b', output)
+        test_ids = []
+        for match in re.finditer(
+                r'(?m)^\s*(test_[\w]+)\s+\(([^)\n]+)\)\s+\.\.\.\s*'
+                r'(?:ok|FAIL|ERROR|skipped|expected failure|unexpected success)\b', output):
+            method, qualified = match.group(1), match.group(2)
+            test_ids.append(qualified if qualified.endswith('.' + method)
+                            else qualified + '.' + method)
+        source_tests = {name: hashed for name, hashed in watched.items()
+                        if name.startswith('tests/') and name.endswith('.py')}
+        self.observed_execution_evidence.append({
+            'execution_id': item.get('id'), 'event_line': line,
+            'cwd': str(root), 'type': item.get('type'),
+            'command': item.get('command'), 'exit_code': item.get('exitCode'),
+            'tests_run': int(count.group(1)) if count else 0,
+            'test_ids': test_ids, 'source_test_inventory': source_tests,
+            'inventory': watched, 'changed_paths': changed,
+        })
+
     def _observe(self, message, line):
         method = message["method"]
         params = message.get("params", {})
@@ -290,6 +346,14 @@ class AppServer:
         elif method in {"item/started", "item/completed"}:
             item = params.get("item", {})
             kind = item.get("type")
+            if (method == "item/completed" and thread_id == self.root_id
+                    and kind in {"commandExecution", "fileChange"}
+                    and getattr(self, "watch_paths", None)):
+                try:
+                    self._capture_execution(item, line)
+                except (OSError, ValueError) as error:
+                    self.errors.append({"observation": "inventory_snapshot_failed",
+                                        "event_line": line, "message": str(error)[:200]})
             if kind == "agentMessage" and method == "item/completed":
                 self.public_messages[(thread_id, item["id"])] = {
                     "thread_id": thread_id, "turn_id": params.get("turnId"),
@@ -779,7 +843,7 @@ def run(args):
               'watched_before': file_inventory(args.watch), 'turns': []}
     try:
         client = AppServer(cwd, out, started + args.timeout_seconds, codex_home=home,
-                           codex_bin=args.codex_bin, answers=answers)
+                           codex_bin=args.codex_bin, answers=answers, watch_paths=args.watch)
         initialize = {
             "clientInfo": {"name": "codex_behavior_evaluation", "title": "Workflow behavior evaluation", "version": "0.1.0"},
             "capabilities": {"experimentalApi": True, "optOutNotificationMethods": [
@@ -813,6 +877,7 @@ def run(args):
         result["children"] = snapshots
         result["child_reports"] = public_child_reports(snapshots, client.public_messages, client.collab)
         result["native_subagent_activity"] = client.activities
+        result['observed_execution_evidence'] = client.observed_execution_evidence
         result["native_collaboration_calls"] = list(client.collab.values())
         result["raw_collaboration_receipts"] = client.raw_collaboration_receipts
         result["public_messages"] = list(client.public_messages.values())
