@@ -293,12 +293,19 @@ class AppServer:
             if not selected.exists():
                 continue
             try:
-                # Watch targets must stay inside the actual fixture root.
-                selected.absolute().relative_to(root)
+                # Keep the input path's lexical prefix; Windows runner HOME
+                # may use a short 8.3 alias while resolved files use the long
+                # profile name. Compare children against the resolved watched
+                # root, not the short name of the original fixture directory.
+                if selected.is_symlink():
+                    raise ValueError('Observed test path is a symbolic link.')
+                prefix = selected.absolute().relative_to(root)
+                resolved = selected.resolve(strict=True)
             except ValueError:
                 raise ValueError('Observed test path escaped the fixture.')
             for path, value in file_inventory([str(selected)]).items():
-                relative = Path(path).relative_to(root).as_posix()
+                child = Path(path).relative_to(resolved) if selected.is_dir() else Path()
+                relative = (prefix / child).as_posix()
                 watched[relative] = value
         watched = dict(sorted(watched.items()))
         previous = self.last_inventory
