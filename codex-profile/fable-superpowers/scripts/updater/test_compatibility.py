@@ -577,9 +577,9 @@ class CurrentSubjectReviewRegressionTests(unittest.TestCase):
 
     def test_later_rejection_and_other_reviewer_blocker_remain_open(self):
         approved = self.report(
-            'Verdict: Approve.\nReviewed full plan and diff and verified current tests without open findings.', 42)
+            'Verdict: Approve.\nReviewed the full approved plan, all final source files and diffs and current independent test outputs; no findings remain.', 42)
         rejected = self.report(
-            'Verdict: Request changes.\nReviewed full plan and diff; Important: invoice validation remains broken in tests.', 55)
+            'Verdict: Request changes.\nReviewed the full approved plan and implementation diff and tests; Important: invoice validation remains broken and unresolved.', 55)
         native = {'native_subagent_activity': self.reviewer('r1', 30, 45) + self.reviewer('r1', 50, 60),
                   'child_reports': {'r1': [approved, rejected]}}
         with self.assertRaises(RuntimeError):
