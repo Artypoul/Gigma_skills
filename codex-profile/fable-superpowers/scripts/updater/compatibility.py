@@ -974,6 +974,9 @@ def preflight(candidate: dict, fixtures: dict, outside: Path, run_root: Path, co
 def _case_run(name: str, fixture: Path, run_root: Path, codex_home: Path) -> dict:
     output = run_root/'observations'/name
     watch = [fixture/'tests'] if name in {'bug_fix', 'approved_plan'} else []
+    if name == 'local_research':
+        watch.extend([fixture/'BRIEF.md', fixture/'sources'])
+    criteria_args = ['--criteria-file', str(RESOURCES/'criteria'/'local_research.json')] if name == 'local_research' else []
     if name == 'bug_fix':
         watch.append(fixture/'discounts.py')
     elif name == 'approved_plan':
@@ -981,7 +984,7 @@ def _case_run(name: str, fixture: Path, run_root: Path, codex_home: Path) -> dic
     watch_args = [arg for path in watch for arg in ('--watch', str(path))]
     result = _cmd([sys.executable,RESOURCES/'appserver_eval.py','--cwd',fixture,
         '--prompt-file',RESOURCES/'prompts'/f'{name}.txt','--out-dir',output,'--codex-home',codex_home,
-        '--collection-only','--sandbox','workspace-write', *watch_args],
+        '--collection-only','--sandbox','workspace-write', *watch_args, *criteria_args],
         HERE,env=_env(codex_home),timeout=1000)
     if result['exit_code'] or not (output/'result.json').exists():
         raise RuntimeError(f'{name}: app-server run failed: '+result['stderr'][:600])
@@ -1484,7 +1487,79 @@ def _tree_status(fixture: Path, codex_home: Path) -> list:
     return [x[3:] for x in result['stdout'].split('\0') if x]
 
 
-def assess_case(name: str, fixture: Path, native: dict, observed: Path, expected: dict, fable: dict, codex_home: Path | None = None) -> dict:
+def research_semantic_evidence(fixture: Path, items: list, semantic_review: dict | None,
+                               *, allow_offline_fixture: bool = False) -> dict:
+    """Bind a separate semantic judgement to one complete final answer and sources.
+
+    Offline fixture evidence exercises only this mechanical acceptance adapter;
+    it is never live agent or independent model evidence.
+    """
+    if not isinstance(semantic_review, dict):
+        raise RuntimeError('semantic_review_required: independent research assessment is unavailable.')
+    finals = [item for item in items if item.get('type') == 'agentMessage'
+              and item.get('phase') == 'final_answer' and isinstance(item.get('text'), str)
+              and item['text'].strip()]
+    if not finals:
+        raise RuntimeError('semantic_review_required: exact final answer was not observed.')
+    finals.sort(key=lambda item: item.get('event_line', -1))
+    answer = finals[-1]['text']
+    criteria_path = RESOURCES/'criteria'/'local_research.json'
+    rubric = json.loads(criteria_path.read_text(encoding='utf-8'))
+    expected_ids = set(rubric['semantic'])
+    if expected_ids != {'choice_satisfies_brief', 'limitations_supported',
+                        'citations_support_claims'}:
+        raise RuntimeError('Research semantic rubric does not match approved criteria.')
+    sources = fixture_inventory(fixture, ['BRIEF.md', 'sources'])
+    if set(sources) != {'BRIEF.md', 'sources/memory-queue.md', 'sources/sqlite-queue.md'}:
+        raise RuntimeError('Research semantic source inventory is incomplete.')
+    subject = {
+        'final_answer_sha256': hashlib.sha256(answer.encode('utf-8')).hexdigest(),
+        'source_inventory': sources,
+        'criteria_sha256': digest(criteria_path),
+    }
+    if semantic_review.get('subject') != subject:
+        raise RuntimeError('semantic subject stale: answer, source or rubric digest differs.')
+    mode = semantic_review.get('review_mode')
+    if mode == 'offline_fixture':
+        if not allow_offline_fixture:
+            raise RuntimeError('independent_live semantic review required; offline fixture is insufficient.')
+    elif mode == 'independent_live':
+        observation = semantic_review.get('observed_reviewer')
+        if (not isinstance(observation, dict)
+                or observation.get('thread_id') != semantic_review.get('reviewer_thread_id')
+                or observation.get('status') != 'completed'
+                or observation.get('source') != 'independent_controller'):
+            raise RuntimeError('independent_live semantic review lacks observed reviewer lifecycle.')
+    else:
+        raise RuntimeError('semantic_review_required: no approved evaluation source.')
+    if (not isinstance(semantic_review.get('reviewer'), str)
+            or not semantic_review['reviewer'].strip()
+            or not isinstance(semantic_review.get('reviewer_thread_id'), str)
+            or not semantic_review['reviewer_thread_id'].strip()
+            or semantic_review['reviewer_thread_id'] == 'root'):
+        raise RuntimeError('semantic_review_required: reviewer is missing or not independent.')
+    checks = semantic_review.get('criteria')
+    if not isinstance(checks, dict) or set(checks) != expected_ids:
+        raise RuntimeError('Independent semantic review does not cover complete criterion set.')
+    for key, check in checks.items():
+        if (not isinstance(check, dict) or check.get('status') != 'satisfied'
+                or not isinstance(check.get('evidence'), str) or not check['evidence'].strip()):
+            raise RuntimeError(f'semantic criterion {key} violated, unavailable or not evidenced.')
+    citations = re.findall(r'\b((?:memory-queue|sqlite-queue)\.md):(\d+)\b', answer)
+    mentioned = {name for name, _ in citations}
+    if mentioned != {'memory-queue.md', 'sqlite-queue.md'}:
+        raise RuntimeError('semantic criterion citations_support_claims: source citation missing.')
+    for filename, raw_line in citations:
+        source_lines = (fixture/'sources'/filename).read_text(encoding='utf-8').splitlines()
+        if int(raw_line) < 1 or int(raw_line) > len(source_lines):
+            raise RuntimeError('semantic criterion citations_support_claims: invalid line offset.')
+    return {'passed': True, 'checks': checks, 'subject': subject,
+            'reviewer': semantic_review['reviewer'],
+            'evidence_tier': mode,
+            'live_independent_review': mode == 'independent_live'}
+
+
+def assess_case(name: str, fixture: Path, native: dict, observed: Path, expected: dict, fable: dict, codex_home: Path | None = None, *, semantic_review: dict | None = None) -> dict:
     if native.get('unexpected_client_requests'):
         raise RuntimeError(f'{name}: an interactive approval/input request occurred in an unattended compatibility trial.')
     codex_home=_fixture_home(fable,codex_home)
@@ -1519,6 +1594,8 @@ def assess_case(name: str, fixture: Path, native: dict, observed: Path, expected
                 raise RuntimeError('Research answer lacks the supported choice or source-line citations.')
             forbidden_skills={'brainstorming','writing-plans','executing-plans','test-driven-development','using-git-worktrees'}
             if forbidden_skills.intersection(loaded):raise RuntimeError('Research started an engineering workflow.')
+            checks['research_semantic']=research_semantic_evidence(
+                fixture, items, semantic_review)
     elif name=='small_config':
         if set(paths)!={'settings.json'} or json.loads((fixture/'settings.json').read_text())!={'retry_count':5,'timeout_seconds':10,'log_level':'info'}:
             raise RuntimeError('Mechanical edit changed more than the requested setting.')

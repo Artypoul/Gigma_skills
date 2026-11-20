@@ -932,6 +932,118 @@ class TestInventoryFreshnessRegressionTests(unittest.TestCase):
                 c.tdd_ordering('bug_fix',fixture,items)
 
 
+
+class ResearchSemanticAcceptanceRegressionTests(unittest.TestCase):
+    """A5: real source and final answer require a separate bound judgement."""
+
+    @staticmethod
+    def answer(valid):
+        if not valid:
+            return ('Choose the in-memory queue for durable multi-process jobs. '
+                    'Do not use SQLite. memory-queue.md:2 sqlite-queue.md:3')
+        return ('Recommend SQLite for three producer processes and persistence after '
+                'restart: sqlite-queue.md:3 and sqlite-queue.md:4. '
+                'The memory queue is per-process and not durable: memory-queue.md:2 '
+                'and memory-queue.md:3. SQLite writers serialize (sqlite-queue.md:5); '
+                'the consumer is at-least-once, so redelivery is possible (sqlite-queue.md:6).')
+
+    @staticmethod
+    def fixture(root):
+        fixture = root/'research'
+        shutil.copytree(c.RESOURCES/'fixtures'/'local_research',fixture)
+        return fixture
+
+    @staticmethod
+    def item(text, line=20, phase='final_answer'):
+        return {'type':'agentMessage','event_line':line,'text':text,'phase':phase}
+
+    def review(self, fixture, answer, *, mode='offline_fixture'):
+        criteria = c.RESOURCES/'criteria'/'local_research.json'
+        source = c.fixture_inventory(fixture,['BRIEF.md','sources'])
+        subject = {'final_answer_sha256':hashlib.sha256(answer.encode('utf-8')).hexdigest(),
+                   'source_inventory':source,'criteria_sha256':c.digest(criteria)}
+        return {'reviewer':'offline-separate-fixture-reviewer',
+                'reviewer_thread_id':'separate-reviewer','review_mode':mode,
+                'subject':subject,
+                'criteria':{name:{'status':'satisfied','evidence':'Grounded in reviewed BRIEF.md and both source files.'}
+                    for name in ('choice_satisfies_brief','limitations_supported','citations_support_claims')}}
+
+    def call_assessor(self, fixture, items, *, semantic_review=None):
+        native={'thread_id':'root','unexpected_client_requests':[],
+                'public_messages':items}
+        patchers = [patch.object(c,'_fixture_home',return_value=fixture),
+                    patch.object(c,'native_items',return_value=items),
+                    patch.object(c,'observed_skill_reads',return_value={'fable5-codex':{'method':'complete_file_read'}}),
+                    patch.object(c,'_tree_status',return_value=[]),
+                    patch.object(c,'_fixture_git',return_value={'exit_code':0,'stdout':'worktree fixture\n','stderr':''})]
+        with ExitStack() as stack:
+            for p in patchers:
+                stack.enter_context(p)
+            kwargs = {'semantic_review':semantic_review} if semantic_review is not None else {}
+            return c.assess_case('local_research',fixture,native,fixture,{}, {'path':str(fixture/'FABLE.md')}, **kwargs)
+
+    def test_research_wrong_choice_with_expected_keywords_is_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self.fixture(Path(td))
+            with self.assertRaisesRegex(RuntimeError,'semantic_review_required'):
+                self.call_assessor(fixture,[self.item(self.answer(False))])
+
+    def test_research_missing_review_is_incomplete_even_for_good_answer(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self.fixture(Path(td))
+            with self.assertRaisesRegex(RuntimeError,'semantic_review_required'):
+                self.call_assessor(fixture,[self.item(self.answer(True))])
+
+    def test_research_final_answer_not_earlier_keyword_chatter(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self.fixture(Path(td))
+            items=[self.item(self.answer(True),line=5,phase='commentary'),
+                   self.item('No recommendation yet; sources unverified.',line=20)]
+            with self.assertRaisesRegex(RuntimeError,'semantic_review_required'):
+                self.call_assessor(fixture,items)
+
+    def test_offline_semantic_fixture_passes_only_in_explicit_fixture_mode(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self.fixture(Path(td))
+            correct = self.answer(True)
+            review = self.review(fixture,correct)
+            result = c.research_semantic_evidence(
+                fixture,[self.item(correct)],review,allow_offline_fixture=True)
+            self.assertTrue(result['passed'])
+            self.assertEqual(result['evidence_tier'],'offline_fixture')
+            with self.assertRaisesRegex(RuntimeError,'independent_live'):
+                c.research_semantic_evidence(fixture,[self.item(correct)],review)
+
+    def test_stale_answer_sources_or_rubric_cannot_reuse_approval(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self.fixture(Path(td))
+            correct = self.answer(True)
+            for changed in ('answer','source','rubric'):
+                with self.subTest(changed=changed):
+                    review = self.review(fixture,correct)
+                    if changed == 'source':
+                        (fixture/'sources'/'sqlite-queue.md').write_text('changed source\n')
+                    if changed == 'rubric':
+                        review['subject']['criteria_sha256'] = '0' * 64
+                    items = [self.item(correct+' UPDATED' if changed=='answer' else correct)]
+                    with self.assertRaisesRegex(RuntimeError,'semantic|stale|subject'):
+                        c.research_semantic_evidence(fixture,items,review,allow_offline_fixture=True)
+                    if changed == 'source':
+                        shutil.copyfile(c.RESOURCES/'fixtures'/'local_research'/'sources'/'sqlite-queue.md',
+                                        fixture/'sources'/'sqlite-queue.md')
+
+    def test_negative_independent_finding_blocks_semantic_acceptance(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self.fixture(Path(td))
+            correct = self.answer(True)
+            review = self.review(fixture,correct)
+            review['criteria']['choice_satisfies_brief'] = {
+                'status':'violated','evidence':'Reviewer found wrong recommendation.'}
+            with self.assertRaisesRegex(RuntimeError,'semantic|criterion|violated'):
+                c.research_semantic_evidence(fixture,[self.item(correct)],review,
+                                              allow_offline_fixture=True)
+
+
 class ImmutableBaselineAcceptanceTests(unittest.TestCase):
     """Run immutable controller-owned tests against candidate implementations."""
 

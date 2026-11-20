@@ -1,0 +1,38 @@
+{
+  "id": "D11",
+  "prompt": "Synthetic owner-decision case D11: Recent Request changes blocks old Approve. Preserve all specified constraints; do not infer missing permissions.",
+  "turns": [
+    "Prior Approve; latest Request changes with Important issue."
+  ],
+  "criteria": {
+    "review": "violated",
+    "resolve_important": "not_checked"
+  },
+  "mandatory": [
+    "review",
+    "resolve_important"
+  ],
+  "allowed_paths": [
+    "docs/owner-decisions/d11-artifact.md"
+  ],
+  "preserve": {},
+  "cancelled": [],
+  "locked_facts": {},
+  "forbid_keys": [],
+  "expected_status": "failed",
+  "fixture_scope": "offline_only",
+  "review_history": [
+    {
+      "event_line": 10,
+      "verdict": "APPROVE",
+      "blocking": []
+    },
+    {
+      "event_line": 20,
+      "verdict": "REQUEST_CHANGES",
+      "blocking": [
+        "Important"
+      ]
+    }
+  ]
+}
