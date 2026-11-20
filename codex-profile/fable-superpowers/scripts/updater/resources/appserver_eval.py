@@ -312,7 +312,9 @@ class AppServer:
         for match in re.finditer(
                 r'(?m)^\s*(test_[\w]+)\s+\(([^)\n]+)\)\s+\.\.\.\s*'
                 r'(?:ok|FAIL|ERROR|skipped|expected failure|unexpected success)\b', output):
-            test_ids.append(match.group(2) + '.' + match.group(1))
+            method, qualified = match.group(1), match.group(2)
+            test_ids.append(qualified if qualified.endswith('.' + method)
+                            else qualified + '.' + method)
         source_tests = {name: hashed for name, hashed in watched.items()
                         if name.startswith('tests/') and name.endswith('.py')}
         self.observed_execution_evidence.append({
