@@ -788,7 +788,7 @@ class TestInventoryFreshnessRegressionTests(unittest.TestCase):
         return {p.relative_to(fixture).as_posix(): c.digest(p)
                 for p in sorted(fixture.rglob('*.py')) if p.is_file()}
 
-    def items(self, fixture, *, green_output='Ran 1 test in 0.001s\n\nOK\n',
+    def items(self, fixture, *, green_output='test_discount (test_discounts.TestDiscount.test_discount) ... ok\nRan 1 test in 0.001s\n\nOK\n',
               green_command='python -B -m unittest discover -s tests -v'):
         source = self.inventory(fixture)
         def write(path, line):
@@ -796,15 +796,16 @@ class TestInventoryFreshnessRegressionTests(unittest.TestCase):
                     'changes':[{'path':str(fixture / path)}]}
         red = {'type':'commandExecution', 'event_line':2,
                'command':'python -B -m unittest discover -s tests -v',
-               'exitCode':1, 'aggregatedOutput':'AssertionError: 190 != 180\nFAILED',
+               'exitCode':1, 'aggregatedOutput':'test_discount (test_discounts.TestDiscount.test_discount) ... FAIL\nAssertionError: 190 != 180\nRan 1 test in 0.001s\nFAILED',
                'controller_evidence': {'execution_id':'red-2', 'cwd':str(fixture),
                    'event_line':2,'tests_run':1,'test_ids':['test_discounts.TestDiscount.test_discount'],
+                   'command':'python -B -m unittest discover -s tests -v','exit_code':1,
                    'source_test_inventory':{'tests/test_discounts.py':source['tests/test_discounts.py']},
                    'inventory':source}}
         green = {'type':'commandExecution', 'event_line':4, 'command':green_command,
                  'exitCode':0, 'aggregatedOutput':green_output,
                  'controller_evidence': {'execution_id':'green-4', 'cwd':str(fixture),
-                     'event_line':4,'tests_run':1,
+                     'event_line':4,'tests_run':1, 'command':green_command,'exit_code':0,
                      'test_ids':['test_discounts.TestDiscount.test_discount'],
                      'source_test_inventory':{'tests/test_discounts.py':source['tests/test_discounts.py']},
                      'inventory':source}}
