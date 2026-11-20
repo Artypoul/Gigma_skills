@@ -973,9 +973,15 @@ def preflight(candidate: dict, fixtures: dict, outside: Path, run_root: Path, co
 
 def _case_run(name: str, fixture: Path, run_root: Path, codex_home: Path) -> dict:
     output = run_root/'observations'/name
+    watch = [fixture/'tests'] if name in {'bug_fix', 'approved_plan'} else []
+    if name == 'bug_fix':
+        watch.append(fixture/'discounts.py')
+    elif name == 'approved_plan':
+        watch.extend([fixture/'invoice_helpers.py', fixture/'invoice_cli.py', fixture/'APPROVED_PLAN.md'])
+    watch_args = [arg for path in watch for arg in ('--watch', str(path))]
     result = _cmd([sys.executable,RESOURCES/'appserver_eval.py','--cwd',fixture,
         '--prompt-file',RESOURCES/'prompts'/f'{name}.txt','--out-dir',output,'--codex-home',codex_home,
-        '--collection-only','--sandbox','workspace-write'],
+        '--collection-only','--sandbox','workspace-write', *watch_args],
         HERE,env=_env(codex_home),timeout=1000)
     if result['exit_code'] or not (output/'result.json').exists():
         raise RuntimeError(f'{name}: app-server run failed: '+result['stderr'][:600])
@@ -985,8 +991,10 @@ def _case_run(name: str, fixture: Path, run_root: Path, codex_home: Path) -> dic
     return native
 
 
-def native_items(path: Path, root_id: str) -> list:
+def native_items(path: Path, root_id: str, observed_receipts=None) -> list:
     result = []
+    observed = {row['event_line']:row for row in (observed_receipts or [])
+                if isinstance(row, dict) and isinstance(row.get('event_line'), int)}
     seen = set()
     for number,line in enumerate(path.read_text(encoding='utf-8').splitlines(),1):
         event = json.loads(line)
@@ -1000,7 +1008,13 @@ def native_items(path: Path, root_id: str) -> list:
         if key in seen:
             continue
         seen.add(key)
-        result.append({'event_line':number,**item})
+        # Never trust an agent-supplied controller_evidence property.
+        row = {'event_line': number, **{k:v for k,v in item.items()
+                                      if k != 'controller_evidence'}}
+        recorded = observed.get(number)
+        if recorded and recorded.get('execution_id') == item.get('id'):
+            row['controller_evidence'] = recorded
+        result.append(row)
     return result
 
 
@@ -1474,7 +1488,9 @@ def assess_case(name: str, fixture: Path, native: dict, observed: Path, expected
     if native.get('unexpected_client_requests'):
         raise RuntimeError(f'{name}: an interactive approval/input request occurred in an unattended compatibility trial.')
     codex_home=_fixture_home(fable,codex_home)
-    items=native_items(observed/'appserver-events.jsonl',native['thread_id'])
+    items=native_items(observed/'appserver-events.jsonl',native['thread_id'],
+                       native.get('observed_execution_evidence'))
+    fable={**fable, 'cwd':str(fixture)}
     loaded=observed_skill_reads(items,expected,fable)
     if 'fable5-codex' not in loaded or not REQUIRED_BY_CASE[name].issubset(loaded):
         raise RuntimeError(f'{name}: required instructions were not actually read from this candidate.')
@@ -1521,7 +1537,22 @@ def assess_case(name: str, fixture: Path, native: dict, observed: Path, expected
             original=_fixture_git(['show','HEAD:APPROVED_PLAN.md'],fixture,codex_home)['stdout'].replace('\r\n','\n')
             actual=(fixture/'APPROVED_PLAN.md').read_text(encoding='utf-8').replace('\r\n','\n').replace('- [x]','- [ ]')
             if actual!=original:raise RuntimeError('Approved plan requirements changed or a new plan replaced it.')
-            checks['independent_review']=review_evidence(native,after_event_line=max(task['last_production_event_line'] for task in checks['tdd_ordering']['tasks']))
+            subject = {'files': checks['tdd_ordering']['final_inventory'],
+                       'criteria_sha256': digest(fixture/'APPROVED_PLAN.md')}
+            native = dict(native)
+            native['observed_test_receipts'] = [
+                {'id': row['execution_id'], 'event_line': row['event_line'],
+                 'command': row['command'], 'exit_code': row['exit_code'],
+                 'tests_run': row['tests_run'], 'files': row['inventory']}
+                for row in native.get('observed_execution_evidence', [])
+                if (row.get('exit_code') == 0 and row.get('tests_run', 0) > 0
+                    and row.get('inventory') == subject['files']
+                    and isinstance(row.get('execution_id'), str))]
+            checks['independent_review'] = review_evidence(
+                native,
+                after_event_line=max(task['last_production_event_line']
+                                     for task in checks['tdd_ordering']['tasks']),
+                expected_subject=subject)
         direct=_fixture_python(['-c',code],fixture,codex_home)
         if direct['exit_code']:raise RuntimeError(f'{name}: direct acceptance checks failed.')
         checks['direct_contract_passed']=True
