@@ -1,0 +1,35 @@
+{
+  "id": "D7",
+  "prompt": "Synthetic owner-decision case D7: Unusual API field is a legacy compatibility lock. Preserve all specified constraints; do not infer missing permissions.",
+  "turns": [
+    "Retain existing field 'vaucherId' for old client."
+  ],
+  "criteria": {
+    "legacy_field": "satisfied",
+    "compat": "satisfied"
+  },
+  "mandatory": [
+    "legacy_field",
+    "compat"
+  ],
+  "allowed_paths": [
+    "docs/owner-decisions/d7-artifact.md"
+  ],
+  "preserve": {
+    "legacy_field": "vaucherId"
+  },
+  "cancelled": [],
+  "locked_facts": {
+    "legacy_client_tests_passed": true
+  },
+  "forbid_keys": [],
+  "expected_status": "passed",
+  "fixture_scope": "offline_only",
+  "review_history": [
+    {
+      "event_line": 10,
+      "verdict": "APPROVE",
+      "blocking": []
+    }
+  ]
+}

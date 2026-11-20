@@ -1,0 +1,35 @@
+{
+  "id": "D2",
+  "prompt": "Synthetic owner-decision case D2: Re-use an already fully approved specification. Preserve all specified constraints; do not infer missing permissions.",
+  "turns": [
+    "Spec is approved; implement without repeating resolved questions."
+  ],
+  "criteria": {
+    "spec_reused": "satisfied",
+    "no_repeat_question": "satisfied"
+  },
+  "mandatory": [
+    "spec_reused",
+    "no_repeat_question"
+  ],
+  "allowed_paths": [
+    "docs/owner-decisions/d2-artifact.md"
+  ],
+  "preserve": {
+    "approved_spec": "v1"
+  },
+  "cancelled": [],
+  "locked_facts": {
+    "repeat_question_count": 0
+  },
+  "forbid_keys": [],
+  "expected_status": "passed",
+  "fixture_scope": "offline_only",
+  "review_history": [
+    {
+      "event_line": 10,
+      "verdict": "APPROVE",
+      "blocking": []
+    }
+  ]
+}

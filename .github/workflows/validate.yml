@@ -76,6 +76,9 @@ jobs:
       - name: Test task acceptance evidence and negative cases
         run: python -B -m unittest discover -s codex-profile/tests -p "test_agent_acceptance_eval.py"
 
+      - name: Test D1-D12 owner decision acceptance receipts (offline only)
+        run: python -B -m unittest discover -s codex-profile/tests -p "test_owner_decision_acceptance.py" -v
+
       - name: Test updater contracts without credentials or model calls
         working-directory: codex-profile/fable-superpowers/scripts/updater
         run: python -B -m unittest -v test_core test_native test_source test_compatibility test_sandbox
