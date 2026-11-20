@@ -795,6 +795,20 @@ def assess_files(result_path, review_path):
     expected = {'result_sha256': sha(path), 'events_sha256': sha(events_path), 'criteria_sha256': sha(criteria_path)}
     if not all(review.get(k) == v and v for k, v in expected.items()) or not review.get('reviewer'):
         raise ValueError('Review must identify its reviewer and match result/events/criteria hashes')
+    criteria = read_json(criteria_path)
+    research_ids = {'choice_satisfies_brief', 'limitations_supported', 'citations_support_claims'}
+    if research_ids.issubset(set(criteria.get('semantic', []))):
+        final_digest = sha(path.parent / 'final.md')
+        source_inventory = native.get('watched_after')
+        if (not final_digest or not isinstance(source_inventory, dict) or not source_inventory
+                or source_inventory != native.get('watched_before')
+                or review.get('final_answer_sha256') != final_digest
+                or review.get('source_inventory') != source_inventory):
+            raise ValueError('Research semantic review has stale final answer or source inventory.')
+        if any(sha(Path(filename)) != value for filename, value in source_inventory.items()):
+            raise ValueError('Research semantic source changed after the reviewer and observations.')
+        expected['final_answer_sha256'] = final_digest
+        expected['source_inventory'] = source_inventory
     events = [json.loads(line) for line in events_path.read_text(encoding='utf-8').splitlines()]
     assessment = assess_observation(native, read_json(criteria_path), events, review.get('criteria'))
     # Assessment is current only while candidate and profile files still match.
