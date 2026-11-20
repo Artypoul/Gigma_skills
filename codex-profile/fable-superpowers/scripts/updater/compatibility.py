@@ -306,6 +306,41 @@ def _baseline_file_inventory(root: Path) -> dict[str, str]:
     return inventory
 
 
+def fixture_inventory(fixture: Path, paths: list[str]) -> dict[str, str]:
+    """Controller-owned, relative path / SHA-256 inventory including new files."""
+    root = Path(fixture).resolve(strict=True)
+    if not root.is_dir() or root.is_symlink():
+        raise ValueError('Fixture inventory root must be an actual directory.')
+    values = {}
+    for raw in paths:
+        if not isinstance(raw, str) or not raw or '\x00' in raw:
+            raise ValueError('Invalid fixture inventory member.')
+        name = raw.replace('\\', '/')
+        parts = name.split('/')
+        if (name.startswith('/') or re.match(r'^[a-zA-Z]:', name)
+                or any(part in ('', '.', '..') for part in parts)):
+            raise ValueError('Fixture inventory member escapes its root.')
+        node = root.joinpath(*parts)
+        if node.is_symlink():
+            raise ValueError('Fixture inventory cannot traverse symlinks.')
+        if not node.exists():
+            continue
+        candidates = sorted(node.rglob('*')) if node.is_dir() else [node]
+        for candidate in candidates:
+            if candidate.is_symlink():
+                raise ValueError('Fixture inventory contains a symlink.')
+            if candidate.is_file():
+                try:
+                    relative = candidate.resolve(strict=True).relative_to(root).as_posix()
+                except ValueError as error:
+                    raise ValueError('Fixture inventory escaped its root.') from error
+                value = digest(candidate)
+                if relative in values and values[relative] != value:
+                    raise ValueError('Fixture inventory observed contradictory file contents.')
+                values[relative] = value
+    return dict(sorted(values.items()))
+
+
 def _baseline_fingerprint(inventory: dict[str, str]) -> str:
     return hashlib.sha256(json.dumps(inventory, sort_keys=True,
         separators=(',', ':')).encode('utf-8')).hexdigest()
