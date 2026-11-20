@@ -461,6 +461,71 @@ class InteractiveFixtureTests(unittest.TestCase):
             runner.validate_answers([{'questions': [{'id': 'x', 'header': 'X', 'question': 'X?'}], 'answers': {'x': ['wrong wire shape']}}])
 
 
+
+class ResearchReviewBindingRegressionTests(unittest.TestCase):
+    """A5: a verdict for yesterday's final answer or source is not a verdict for today."""
+
+    def fixture(self, root):
+        source = root/'sources'
+        source.mkdir()
+        (source/'BRIEF.md').write_text('Three producers, durable queue\n')
+        (source/'memory-queue.md').write_text('Volatile\n')
+        (source/'sqlite-queue.md').write_text('Durable\n')
+        answer = root/'final.md'
+        answer.write_text('Choose SQLite; see sqlite-queue.md:1\n')
+        candidate = root/'candidate.md'
+        candidate.write_text('Installed frozen candidate\n')
+        watched = runner.file_inventory([source])
+        native = AcceptanceTests().observation()
+        native.update(candidate_roots=[str(candidate)],
+                      candidate_before=runner.file_inventory([candidate]),
+                      candidate_after=runner.file_inventory([candidate]),
+                      watched_before=watched, watched_after=watched)
+        result = root/'result.json'
+        result.write_text(json.dumps(native))
+        events = root/'appserver-events.jsonl'
+        events.write_text('')
+        criteria = root/'criteria.json'
+        criteria.write_text(json.dumps({'mechanical':['completed'],
+                     'semantic':['choice_satisfies_brief','limitations_supported',
+                                 'citations_support_claims']}))
+        receipt = {'reviewer':'offline-fixture-reviewer',
+                   'result_sha256':runner.sha(result),'events_sha256':runner.sha(events),
+                   'criteria_sha256':runner.sha(criteria),
+                   'final_answer_sha256':runner.sha(answer),
+                   'source_inventory':watched,
+                   'criteria':{key:{'status':'satisfied','evidence':'reviewed source lines'}
+                       for key in ['choice_satisfies_brief','limitations_supported',
+                                   'citations_support_claims']}}
+        review = root/'review.json'
+        review.write_text(json.dumps(receipt))
+        return result,review,answer,source
+
+    def test_review_rejects_modified_final_answer(self):
+        with tempfile.TemporaryDirectory() as td:
+            result,review,answer,_ = self.fixture(Path(td))
+            answer.write_text('Replaced answer after review\n')
+            with self.assertRaisesRegex(ValueError,'final answer|hash|semantic'):
+                runner.assess_files(result,review)
+
+    def test_review_rejects_modified_cited_source(self):
+        with tempfile.TemporaryDirectory() as td:
+            result,review,_,source = self.fixture(Path(td))
+            (source/'sqlite-queue.md').write_text('Changed after the reviewer\n')
+            with self.assertRaisesRegex(ValueError,'source|inventory|semantic'):
+                runner.assess_files(result,review)
+
+    def test_review_for_exact_final_and_source_can_pass_offline_adapter(self):
+        with tempfile.TemporaryDirectory() as td:
+            result,review,_,_ = self.fixture(Path(td))
+            code = runner.assess_files(result,review)
+            self.assertEqual(code,0)
+            recorded=json.loads((Path(td)/'acceptance-reviewed.json').read_text())
+            self.assertEqual(recorded['status'],'passed')
+            self.assertEqual(recorded['binding']['final_answer_sha256'],
+                             json.loads(review.read_text())['final_answer_sha256'])
+
+
 class OfflineReviewTests(unittest.TestCase):
     def test_current_candidate_change_invalidates_bound_review(self):
         with tempfile.TemporaryDirectory() as td:
