@@ -1014,6 +1014,20 @@ class ResearchSemanticAcceptanceRegressionTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'independent_live'):
                 c.research_semantic_evidence(fixture,[self.item(correct)],review)
 
+    def test_fabricated_live_research_review_without_trace_is_blocked(self):
+        """A claimed controller source in caller JSON does not prove live review."""
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self.fixture(Path(td))
+            answer = self.answer(True)
+            review = self.review(fixture, answer, mode='independent_live')
+            review['observed_reviewer'] = {
+                'thread_id': 'separate-reviewer',
+                'source': 'independent_controller',
+                'status': 'completed',
+            }
+            with self.assertRaisesRegex(RuntimeError, 'independent_live.*trace'):
+                c.research_semantic_evidence(fixture, [self.item(answer)], review)
+
     def test_stale_answer_sources_or_rubric_cannot_reuse_approval(self):
         with tempfile.TemporaryDirectory() as td:
             fixture = self.fixture(Path(td))
