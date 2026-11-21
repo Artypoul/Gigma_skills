@@ -1356,9 +1356,26 @@ def _writes_path(item: dict, fixture: Path, relative: str) -> bool:
     return False
 
 
+def _direct_unittest_invocation(command: str) -> bool:
+    """Reject a printed unittest transcript or shell chain as test execution."""
+    if not isinstance(command, str) or len(command) > 4096:
+        return False
+    executable = r'(?:python(?:3(?:\.\d+)?)?|py)(?:\.exe)?'
+    quoted = r"""(?:"[^"\r\n]*[/\\]python(?:3(?:\.\d+)?)?(?:\.exe)?"|'[^'\r\n]*[/\\]python(?:3(?:\.\d+)?)?(?:\.exe)?')"""
+    path = r'(?:[A-Za-z]:[/\\]|/)[\w./\\-]*[/\\]python(?:3(?:\.\d+)?)?(?:\.exe)?'
+    argument = r"""(?:[\w./\\:*=-]+|"[^"\r\n;|&<>$\x60]+"|'[^'\r\n;|&<>$\x60]+')"""
+    pattern = (
+        rf'(?:&\s+)?(?:{executable}|{quoted}|{path})\s+'
+        rf'(?:(?:-[BIEsSu]|-3(?:\.\d+)?)\s+)*-m\s+unittest'
+        rf'(?:\s+{argument})*'
+    )
+    return bool(re.fullmatch(pattern, command.strip(), re.I))
+
+
 def _observed_test_run(item: dict, fixture: Path, target: str, *, green: bool) -> bool:
     """Require a completed controller-observed test for the actual target."""
-    if item.get('type') != 'commandExecution' or 'unittest' not in item.get('command', ''):
+    if (item.get('type') != 'commandExecution'
+            or not _direct_unittest_invocation(item.get('command'))):
         return False
     if (item.get('exitCode') != 0) == green:
         return False
