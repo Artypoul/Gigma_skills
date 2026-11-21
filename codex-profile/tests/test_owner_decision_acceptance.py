@@ -132,6 +132,17 @@ class OwnerDecisionAcceptanceTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'independent_live'):
                 runner.evaluate_owner_decision_fixture(manifest,record,root)
 
+    def test_fabricated_live_reviewer_without_controller_trace_is_blocked(self):
+        """A JSON claim of controller review is not observed independent live evidence."""
+        with tempfile.TemporaryDirectory() as td:
+            manifest, record, root = self.fixture('D3', Path(td))
+            record['review_mode'] = 'independent_live'
+            record['observed_live_reviewer'] = {
+                'source': 'independent_controller', 'status': 'completed',
+            }
+            with self.assertRaisesRegex(RuntimeError, 'independent_live.*trace'):
+                runner.evaluate_owner_decision_fixture(manifest, record, root)
+
 
 if __name__ == '__main__':
     unittest.main()
