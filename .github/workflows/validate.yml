@@ -21,6 +21,7 @@ jobs:
       - name: Verify generated Codex mirror
         run: |
           bash sync-codex.sh
+          bash sync-codex.sh
           git diff --exit-code -- .codex
           test -z "$(git ls-files --others --exclude-standard -- .codex)"
 
