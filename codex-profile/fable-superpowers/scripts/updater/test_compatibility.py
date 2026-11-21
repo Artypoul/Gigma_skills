@@ -907,6 +907,17 @@ class TestInventoryFreshnessRegressionTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'GREEN|receipt|evidence|controller'):
                 c.tdd_ordering('bug_fix',fixture,items)
 
+    def test_echoed_unittest_transcript_cannot_prove_green(self):
+        """A green-looking transcript from echo is not a unittest invocation."""
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self.fixture(Path(td))
+            items = self.items(
+                fixture,
+                green_command='echo python -B -m unittest discover -s tests -v',
+            )
+            with self.assertRaisesRegex(RuntimeError, 'GREEN|test|command'):
+                c.tdd_ordering('bug_fix', fixture, items)
+
     def test_read_only_hash_after_green_keeps_fresh_proof(self):
         with tempfile.TemporaryDirectory() as td:
             fixture = self.fixture(Path(td))
