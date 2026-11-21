@@ -168,7 +168,7 @@ Before answering "ready":
 - no secrets, tokens, private paths or credentials were printed or committed;
 - handoff includes the next required action.
 
-If any item is unknown, answer "not ready yet" or "ready with this explicit risk".
+If any mandatory criterion is failed, blocked, unknown, incomplete, or unverified, answer `not ready yet` and name the missing evidence. `ready with this explicit risk` is allowed only for optional residual risks after every mandatory criterion has current passing evidence.
 
 ## Dirty Worktree
 

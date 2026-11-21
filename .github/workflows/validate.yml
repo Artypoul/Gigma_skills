@@ -21,14 +21,15 @@ jobs:
       - name: Verify generated Codex mirror
         run: |
           bash sync-codex.sh
+          bash sync-codex.sh
           git diff --exit-code -- .codex
           test -z "$(git ls-files --others --exclude-standard -- .codex)"
 
       - name: Validate plugins and Codex mirror
-        run: python validate_plugin.py
+        run: python -B validate_plugin.py
 
       - name: Run marketplace source regression tests
-        run: python -m unittest discover -s tests -p "test_*.py"
+        run: python -B -m unittest discover -s tests -p "test_*.py"
 
       - name: Run VPS network evidence regression tests
         run: python -m unittest discover -s plugins/vps-support/tests -p "test_*.py"
@@ -37,7 +38,7 @@ jobs:
         run: python -m unittest discover -s plugins/codex-toolkit/tests -p "test_*.py"
 
       - name: Run development workflow regression tests
-        run: python -m unittest discover -s plugins/development-workflow/tests -p "test_*.py"
+        run: python -B -m unittest discover -s plugins/development-workflow/tests -p "test_*.py"
 
       - name: Install H2D gate dependencies
         working-directory: plugins/h2d-transfer/skills/h2d-pixel-perfect-transfer
@@ -75,6 +76,12 @@ jobs:
 
       - name: Test task acceptance evidence and negative cases
         run: python -B -m unittest discover -s codex-profile/tests -p "test_agent_acceptance_eval.py"
+
+      - name: Test D1-D12 owner decision acceptance receipts (offline only)
+        run: python -B -m unittest discover -s codex-profile/tests -p "test_owner_decision_acceptance.py" -v
+
+      - name: Test complete Codex profile suite on the current checkout
+        run: python -B -m unittest discover -s codex-profile/tests -p "test_*.py"
 
       - name: Test updater contracts without credentials or model calls
         working-directory: codex-profile/fable-superpowers/scripts/updater

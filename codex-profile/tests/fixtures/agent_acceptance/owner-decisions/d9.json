@@ -1,0 +1,33 @@
+{
+  "id": "D9",
+  "prompt": "Synthetic owner-decision case D9: Changed files invalidate existing GREEN and review. Preserve all specified constraints; do not infer missing permissions.",
+  "turns": [
+    "After review, production/tests changed."
+  ],
+  "criteria": {
+    "current_review": "not_checked",
+    "post_change_tests": "not_checked"
+  },
+  "mandatory": [
+    "current_review",
+    "post_change_tests"
+  ],
+  "allowed_paths": [
+    "docs/owner-decisions/d9-artifact.md"
+  ],
+  "preserve": {},
+  "cancelled": [],
+  "locked_facts": {
+    "evidence_stale": true
+  },
+  "forbid_keys": [],
+  "expected_status": "incomplete",
+  "fixture_scope": "offline_only",
+  "review_history": [
+    {
+      "event_line": 10,
+      "verdict": "APPROVE",
+      "blocking": []
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "mechanical": [
+    "completed",
+    "read_only"
+  ],
+  "semantic": [
+    "choice_satisfies_brief",
+    "limitations_supported",
+    "citations_support_claims"
+  ]
+}
