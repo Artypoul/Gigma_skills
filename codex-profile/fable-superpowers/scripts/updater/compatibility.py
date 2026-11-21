@@ -1524,12 +1524,11 @@ def research_semantic_evidence(fixture: Path, items: list, semantic_review: dict
         if not allow_offline_fixture:
             raise RuntimeError('independent_live semantic review required; offline fixture is insufficient.')
     elif mode == 'independent_live':
-        observation = semantic_review.get('observed_reviewer')
-        if (not isinstance(observation, dict)
-                or observation.get('thread_id') != semantic_review.get('reviewer_thread_id')
-                or observation.get('status') != 'completed'
-                or observation.get('source') != 'independent_controller'):
-            raise RuntimeError('independent_live semantic review lacks observed reviewer lifecycle.')
+        # A caller-supplied review dictionary cannot authenticate app-server
+        # events or a separate model invocation. Keep live acceptance blocked
+        # until controller-owned reviewer chronology is checked at this boundary.
+        raise RuntimeError('independent_live requires a verified controller event trace; '
+                           'the semantic receipt adapter cannot authenticate a live reviewer.')
     else:
         raise RuntimeError('semantic_review_required: no approved evaluation source.')
     if (not isinstance(semantic_review.get('reviewer'), str)
