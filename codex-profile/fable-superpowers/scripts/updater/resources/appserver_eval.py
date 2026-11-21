@@ -109,10 +109,10 @@ def evaluate_owner_decision_fixture(manifest: dict, observed: dict, artifact_roo
     if mode not in {'offline_fixture','independent_live'}:
         raise RuntimeError('Owner-decision evidence origin is unverified.')
     if mode == 'independent_live':
-        reviewer = observed.get('observed_live_reviewer')
-        if (not isinstance(reviewer, dict) or reviewer.get('source') != 'independent_controller'
-                or reviewer.get('status') != 'completed'):
-            raise RuntimeError('independent_live owner review not observed by controller.')
+        # This adapter sees only caller-supplied JSON, not an authenticated app-server
+        # trace. Its offline fixtures cannot establish a live review's provenance.
+        raise RuntimeError('independent_live requires a verified controller event trace; '
+                           'offline owner-decision fixtures cannot authenticate it.')
 
     root = Path(artifact_root).resolve(strict=True)
     if not root.is_dir():
