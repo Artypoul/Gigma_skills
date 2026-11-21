@@ -1,3 +1,33 @@
+# Current-state continuation — 2026-11-21
+
+> This continuation supersedes the historical PR/main status claims in the original 2026-11-20 report below. That report is preserved as dated RED/GREEN evidence, not a current GitHub status statement.
+
+## Frozen sources and actual GitHub state
+
+- Registry main at continuation: 7b7cbf2a90ac2472a3b97e9343280ccb2d2b9419; FABLE_MODE=chatgpt_github; MCP_GATE=not_run.
+- Fable 5 1.4.3 at cb76769f1fce9df196c22b2b708ba8474cbf5aa1; Superpowers 7.0.2 at 22f0b463e7a5e579904dd6211a520321035526f7; pins unchanged.
+- PRs #81–#86 now show merged. #81 is in main; #82/#83 are ancestors of main. However #84–#86 were merged to stacked feature bases after upstream integration and their product code, D1–D12 fixtures and report never entered main.
+- Main workflow [44681686765](https://github.com/Artypoul/Gigma_skills/actions/runs/44681686765) passed 6/6 but ran 142 Ubuntu updater tests, not the recovered D1–D12 or A5/A6 checks.
+
+## Recovery and implementation
+
+- [Draft PR #87](https://github.com/Artypoul/Gigma_skills/pull/87) starts at that exact main SHA, without merging or force pushing. First commit c20ac7d742fe24eb21abfd815f7dcd882e7397f1 reconstructed exactly 20 files by matching PR #86 donor blob SHAs; 6/6 CI jobs passed on [44868251636](https://github.com/Artypoul/Gigma_skills/actions/runs/44868251636).
+- Subsequent TDD: fake D1–D12 independent_live JSON receipt was accepted without controller trace; RED b4ff77bbbba0246372f08ca31b59d4f2af76fc08, [44868327927](https://github.com/Artypoul/Gigma_skills/actions/runs/44868327927), 13 tests, 1 failure on Ubuntu/Windows. Fail-closed correction 29f497f94dc9523b40d8ee67dd7e9f0b3275207a.
+- Fake A5 independent_live semantic JSON receipt similarly passed without event trace; RED d46e0f5b6ddce2ef5aa998b2a043effc0f18a52e, [44868452890](https://github.com/Artypoul/Gigma_skills/actions/runs/44868452890), 156 updater tests, 1 failure/4 skips Ubuntu. Fail-closed correction 3dce675e3b42054d3706cd3ce2f4e2dd15ed2f75.
+- Canonical G3 handoff allowed ready-with-risk with unknown mandatory criteria. RED 033cfa589150f5283ba1633f346798f1bac2394b, [44868555098](https://github.com/Artypoul/Gigma_skills/actions/runs/44868555098), development-workflow suite 8 tests/1 failure. Fixed cdeac350f7685443709a7554bad52650e60d4110, version 0.4.14 in both development-workflow manifests, exact same skill bytes in canonical source and generated .codex mirror.
+- Fake A6 unittest transcript printed with echo was counted as GREEN. RED f015f6b99b6c4ea03ce09af1782ddd4e1aa28605, [44868797591](https://github.com/Artypoul/Gigma_skills/actions/runs/44868797591), 157 updater tests, 1 failure/4 skips Ubuntu. Corrected in 7f2817f1f4299aee77247da1d14c93d72180434d by recognizing direct Python unittest invocations instead of a matching word.
+- The workflow now includes exact root validate, marketplace, full Codex profile, development-workflow and updater commands; Windows/Ubuntu matrix remains. Historical CI successes do not automatically establish a new head's status.
+
+## Acceptance boundaries / unfinished gates
+
+- A1/A2 merged and previously verified; A3/A4 present in main, previous deterministic tests pass. A5/A6/G2/G3 restored and further corrected in draft PR #87; not in main until explicitly authorized merge.
+- D1–D12 receipts are synthetic offline controls with predeclared outcomes, not twelve independent model trials. No evidence of sequential live steering or in-flight cancellation. The fake-live loopholes above now fail closed, but the real live reviewer pathway remains unimplemented.
+- A5 general run_compatibility invokes assess_case without semantic_review; a genuine local_research semantic pass therefore needs separate authenticated controller orchestration; this is not satisfied by the offline adapter.
+- G1 owner choice between a validated development-workflow@gigma-skills dependency and complete canonical immutable read remains unmade. No global installation or enabled/disabled/source preferences changed.
+- The mandated gpt-6.1-sol, reasoning_effort=xhigh, fork_turns=none independent review is unavailable; GitHub Codex review previously returned usage limit errors. There are no independent approval receipts. Do not report self-review as independent.
+- The FINAL SHA checks, complete CI result, review comment status and any independent/live acceptance remain OPEN until observed on the final published candidate; see PR #87 for current checks. No deployment, merge, force-push or auto-merge.
+
+---
 # Fable 5 orchestration acceptance — implementation evidence (2026-11-20)
 
 ## Scope, mode and immutable upstreams

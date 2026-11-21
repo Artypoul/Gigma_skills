@@ -918,6 +918,27 @@ class TestInventoryFreshnessRegressionTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'GREEN|test|command'):
                 c.tdd_ordering('bug_fix', fixture, items)
 
+    def test_direct_unittest_commands_on_windows_and_linux(self):
+        accepted = [
+            'python -B -m unittest discover -s tests -v',
+            'python3 -m unittest discover -s tests -v',
+            'py -3 -m unittest tests.test_discounts -v',
+            r'& "C:\Program Files\Python312\python.exe" -B -m unittest discover -s tests -v',
+            r'C:\Python312\python.exe -B -m unittest discover -s tests -v',
+            '/usr/bin/python3 -B -m unittest discover -s tests -v',
+        ]
+        rejected = [
+            'echo python -B -m unittest discover -s tests -v',
+            'python -B -m unittest discover -s tests -v; echo fake',
+            'python -c "print(\u0027Ran 1 test OK unittest\u0027)"',
+        ]
+        for command in accepted:
+            with self.subTest(command=command):
+                self.assertTrue(c._direct_unittest_invocation(command))
+        for command in rejected:
+            with self.subTest(command=command):
+                self.assertFalse(c._direct_unittest_invocation(command))
+
     def test_read_only_hash_after_green_keeps_fresh_proof(self):
         with tempfile.TemporaryDirectory() as td:
             fixture = self.fixture(Path(td))
