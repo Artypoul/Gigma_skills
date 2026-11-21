@@ -74,6 +74,136 @@ def sha(path: Path) -> str | None:
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
 
 
+def evaluate_owner_decision_fixture(manifest: dict, observed: dict, artifact_root: Path,
+                                    *, allow_offline_fixture: bool = False) -> dict:
+    """Deterministic D1–D12 receipt adapter (NOT a live-agent evaluator).
+
+    Real agent correctness still requires an independently observed semantic
+    reviewer and a live trace. This function guards only the explicit frozen
+    contract and subject/cancellation/chronology integrity.
+    """
+    if not isinstance(manifest, dict) or not isinstance(observed, dict):
+        raise ValueError('Owner-decision inputs must be structured dictionaries.')
+    required = {'id','prompt','turns','criteria','allowed_paths','preserve'}
+    if not required.issubset(manifest):
+        raise ValueError('Owner-decision manifest misses required contract fields.')
+    case = manifest['id']
+    if not isinstance(case, str) or not re.fullmatch(r'D(?:[1-9]|1[0-2])', case):
+        raise ValueError('Unknown owner-decision fixture id.')
+    if (not isinstance(manifest['prompt'], str) or not manifest['prompt'].strip()
+            or not isinstance(manifest['turns'], list)
+            or not all(isinstance(turn, str) and turn.strip() for turn in manifest['turns'])
+            or not isinstance(manifest['criteria'], dict)
+            or not isinstance(manifest['allowed_paths'], list)
+            or not isinstance(manifest['preserve'], dict)):
+        raise ValueError('Invalid owner-decision manifest schema.')
+    repo_root = HERE.parents[4]
+    original = repo_root/'codex-profile'/'tests'/'fixtures'/'agent_acceptance'/'owner-decisions'/(case.lower()+'.json')
+    if not original.is_file() or json.loads(original.read_text(encoding='utf-8')) != manifest:
+        raise ValueError('Owner-decision manifest differs from the frozen source.')
+    if observed.get('manifest_sha256') != sha(original):
+        raise ValueError('Owner-decision fixture manifest hash is stale.')
+    mode = observed.get('review_mode')
+    if mode == 'offline_fixture' and not allow_offline_fixture:
+        raise RuntimeError('independent_live reviewer unavailable: offline fixtures are not model trials.')
+    if mode not in {'offline_fixture','independent_live'}:
+        raise RuntimeError('Owner-decision evidence origin is unverified.')
+    if mode == 'independent_live':
+        reviewer = observed.get('observed_live_reviewer')
+        if (not isinstance(reviewer, dict) or reviewer.get('source') != 'independent_controller'
+                or reviewer.get('status') != 'completed'):
+            raise RuntimeError('independent_live owner review not observed by controller.')
+
+    root = Path(artifact_root).resolve(strict=True)
+    if not root.is_dir():
+        raise ValueError('Artifact root missing.')
+    inventory = {}
+    for candidate in sorted(root.rglob('*')):
+        if candidate.is_symlink():
+            raise ValueError('Artifact inventory may not follow symbolic links.')
+        if candidate.is_file():
+            relative = candidate.relative_to(root).as_posix()
+            inventory[relative] = sha(candidate)
+    allowed = manifest['allowed_paths']
+    if (len(allowed) != len(set(allowed))
+            or not allowed or any(not isinstance(p, str) or p.startswith('/')
+                or ':' in p or '..' in p.split('/') or '\\' in p or not p
+                for p in allowed)
+            or not set(inventory).issubset(set(allowed))
+            or not set(allowed).issubset(set(inventory))):
+        raise ValueError('Owner-decision artifact changed outside its exact allowlist.')
+    if observed.get('artifact_inventory') != inventory:
+        raise ValueError('Owner-decision artifact inventory is stale or incomplete.')
+    subject = hashlib.sha256(json.dumps(
+        inventory, sort_keys=True, separators=(',', ':')).encode('utf-8')).hexdigest()
+    if observed.get('artifact_subject_sha256') != subject:
+        raise ValueError('Owner-decision artifact subject does not match actual bytes.')
+    preserved = manifest.get('preserve', {})
+    decisions = observed.get('decisions')
+    if (not isinstance(decisions, dict)
+            or any(decisions.get(key) != value for key,value in preserved.items())):
+        raise RuntimeError('An approved owner decision was changed without permission.')
+    cancelled = manifest.get('cancelled', [])
+    if (not isinstance(cancelled, list) or observed.get('cancelled') != cancelled
+            or set(cancelled) & set(decisions)):
+        raise RuntimeError('Cancelled requirement was resurrected or cancellation lost.')
+    facts = observed.get('decision_facts')
+    if (not isinstance(facts, dict)
+            or any(facts.get(key) != value for key,value in manifest.get('locked_facts', {}).items())
+            or set(facts) & set(manifest.get('forbid_keys', []))):
+        raise RuntimeError('Locked decision was changed, or a new limit/target was invented.')
+
+    expected_criteria = manifest['criteria']
+    required_criteria = manifest.get('mandatory', list(expected_criteria))
+    receipts = observed.get('criterion_evidence')
+    if (not isinstance(receipts, dict) or set(receipts) != set(expected_criteria)
+            or not isinstance(required_criteria, list)
+            or not set(required_criteria).issubset(expected_criteria)):
+        raise RuntimeError('Owner-decision evidence is missing required criteria.')
+    for key, expected_status in expected_criteria.items():
+        evidence = receipts[key]
+        if (not isinstance(evidence, dict)
+                or evidence.get('status') != expected_status
+                or not isinstance(evidence.get('evidence'), str)
+                or not evidence['evidence'].strip()):
+            raise RuntimeError('Owner-decision criterion is unverified or contradicted.')
+        current = evidence.get('subject_sha256') == subject
+        if not current and not (expected_status == 'not_checked'
+                                and manifest.get('locked_facts', {}).get('evidence_stale') is True):
+            raise RuntimeError('Owner-decision review/test evidence is stale.')
+    open_criteria = sorted(key for key, receipt in receipts.items()
+                           if receipt['status'] not in {'satisfied','cancelled'})
+    if observed.get('unresolved_criteria') != [key for key,status in expected_criteria.items()
+                                                if status not in ('satisfied','cancelled')]:
+        raise RuntimeError('Owner-decision unresolved criteria were hidden or altered.')
+
+    reviews = observed.get('review_history')
+    if reviews != manifest.get('review_history') or not isinstance(reviews, list):
+        raise RuntimeError('Owner-decision review history is incomplete or mismatched.')
+    if any(not isinstance(v.get('event_line'), int) or v.get('event_line') < 0
+           for v in reviews) or any(a['event_line'] >= b['event_line']
+                                   for a,b in zip(reviews,reviews[1:])):
+        raise RuntimeError('Owner-decision review chronology is invalid.')
+    last_review = reviews[-1]['verdict'] if reviews else 'UNAVAILABLE'
+    latest_blocks = (last_review != 'APPROVE' or bool(reviews and reviews[-1].get('blocking')))
+    states = [receipts[key]['status'] for key in required_criteria]
+    if 'violated' in states or last_review == 'REQUEST_CHANGES':
+        status = 'failed'
+    elif any(s not in ('satisfied','cancelled') for s in states) or latest_blocks:
+        status = 'incomplete'
+    else:
+        status = 'passed'
+    ready = status == 'passed'
+    if status != manifest.get('expected_status'):
+        raise RuntimeError('Owner-decision expected gate contradicts evidence state.')
+    if observed.get('declared_ready') is not ready:
+        raise RuntimeError('Owner-decision agent declared false ready or false incomplete.')
+    return {'status':status, 'ready':ready, 'evidence_tier':mode,
+            'subject_sha256':subject, 'open_criteria':open_criteria,
+            'latest_review':last_review,
+            'in_flight_steering_verified':False}
+
+
 def safe_value(value):
     """Discard private reasoning/encryption, preserving ordinary tool evidence."""
     if isinstance(value, dict):
@@ -127,7 +257,7 @@ class RpcError(RuntimeError):
 
 class AppServer:
     def __init__(self, cwd: Path, out: Path, deadline: float, codex_home: Path | None = None,
-                 codex_bin=None, answers=None):
+                 codex_bin=None, answers=None, watch_paths=None):
         codex = resolve_codex(codex_bin)
         env = os.environ.copy()
         env.pop("CODEX_THREAD_ID", None)
@@ -143,6 +273,10 @@ class AppServer:
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
         self.deadline = deadline
+        self.cwd = Path(cwd).resolve(strict=True)
+        self.watch_paths = [Path(path) for path in (watch_paths or [])]
+        self.last_inventory = {}
+        self.observed_execution_evidence = []
         self.messages = queue.Queue()
         self.responses = {}
         self.next_id = 1
@@ -277,6 +411,58 @@ class AppServer:
         self._record(response, "client")
         self._write(response)
 
+    def _capture_execution(self, item, line):
+        """Observe fixture bytes at the boundary of a completed native item.
+
+        The receipt comes from the controller, never from agent answer text.
+        Unknown tool/output shapes produce incomplete evidence, not a pass.
+        """
+        watched = {}
+        root = self.cwd
+        for selected in self.watch_paths:
+            if not selected.exists():
+                continue
+            try:
+                # Keep the input path's lexical prefix; Windows runner HOME
+                # may use a short 8.3 alias while resolved files use the long
+                # profile name. Compare children against the resolved watched
+                # root, not the short name of the original fixture directory.
+                if selected.is_symlink():
+                    raise ValueError('Observed test path is a symbolic link.')
+                prefix = selected.absolute().relative_to(root)
+                resolved = selected.resolve(strict=True)
+            except ValueError:
+                raise ValueError('Observed test path escaped the fixture.')
+            for path, value in file_inventory([str(selected)]).items():
+                child = Path(path).relative_to(resolved) if selected.is_dir() else Path()
+                relative = (prefix / child).as_posix()
+                watched[relative] = value
+        watched = dict(sorted(watched.items()))
+        previous = self.last_inventory
+        changed = sorted(p for p in set(previous) | set(watched)
+                         if previous.get(p) != watched.get(p))
+        self.last_inventory = watched
+
+        output = item.get('aggregatedOutput') or ''
+        count = re.search(r'\bRan\s+(\d+)\s+tests?\b', output)
+        test_ids = []
+        for match in re.finditer(
+                r'(?m)^\s*(test_[\w]+)\s+\(([^)\n]+)\)\s+\.\.\.\s*'
+                r'(?:ok|FAIL|ERROR|skipped|expected failure|unexpected success)\b', output):
+            method, qualified = match.group(1), match.group(2)
+            test_ids.append(qualified if qualified.endswith('.' + method)
+                            else qualified + '.' + method)
+        source_tests = {name: hashed for name, hashed in watched.items()
+                        if name.startswith('tests/') and name.endswith('.py')}
+        self.observed_execution_evidence.append({
+            'execution_id': item.get('id'), 'event_line': line,
+            'cwd': str(root), 'type': item.get('type'),
+            'command': item.get('command'), 'exit_code': item.get('exitCode'),
+            'tests_run': int(count.group(1)) if count else 0,
+            'test_ids': test_ids, 'source_test_inventory': source_tests,
+            'inventory': watched, 'changed_paths': changed,
+        })
+
     def _observe(self, message, line):
         method = message["method"]
         params = message.get("params", {})
@@ -290,6 +476,14 @@ class AppServer:
         elif method in {"item/started", "item/completed"}:
             item = params.get("item", {})
             kind = item.get("type")
+            if (method == "item/completed" and thread_id == self.root_id
+                    and kind in {"commandExecution", "fileChange"}
+                    and getattr(self, "watch_paths", None)):
+                try:
+                    self._capture_execution(item, line)
+                except (OSError, ValueError) as error:
+                    self.errors.append({"observation": "inventory_snapshot_failed",
+                                        "event_line": line, "message": str(error)[:200]})
             if kind == "agentMessage" and method == "item/completed":
                 self.public_messages[(thread_id, item["id"])] = {
                     "thread_id": thread_id, "turn_id": params.get("turnId"),
@@ -731,6 +925,20 @@ def assess_files(result_path, review_path):
     expected = {'result_sha256': sha(path), 'events_sha256': sha(events_path), 'criteria_sha256': sha(criteria_path)}
     if not all(review.get(k) == v and v for k, v in expected.items()) or not review.get('reviewer'):
         raise ValueError('Review must identify its reviewer and match result/events/criteria hashes')
+    criteria = read_json(criteria_path)
+    research_ids = {'choice_satisfies_brief', 'limitations_supported', 'citations_support_claims'}
+    if research_ids.issubset(set(criteria.get('semantic', []))):
+        final_digest = sha(path.parent / 'final.md')
+        source_inventory = native.get('watched_after')
+        if (not final_digest or not isinstance(source_inventory, dict) or not source_inventory
+                or source_inventory != native.get('watched_before')
+                or review.get('final_answer_sha256') != final_digest
+                or review.get('source_inventory') != source_inventory):
+            raise ValueError('Research semantic review has stale final answer or source inventory.')
+        if any(sha(Path(filename)) != value for filename, value in source_inventory.items()):
+            raise ValueError('Research semantic source changed after the reviewer and observations.')
+        expected['final_answer_sha256'] = final_digest
+        expected['source_inventory'] = source_inventory
     events = [json.loads(line) for line in events_path.read_text(encoding='utf-8').splitlines()]
     assessment = assess_observation(native, read_json(criteria_path), events, review.get('criteria'))
     # Assessment is current only while candidate and profile files still match.
@@ -779,7 +987,7 @@ def run(args):
               'watched_before': file_inventory(args.watch), 'turns': []}
     try:
         client = AppServer(cwd, out, started + args.timeout_seconds, codex_home=home,
-                           codex_bin=args.codex_bin, answers=answers)
+                           codex_bin=args.codex_bin, answers=answers, watch_paths=args.watch)
         initialize = {
             "clientInfo": {"name": "codex_behavior_evaluation", "title": "Workflow behavior evaluation", "version": "0.1.0"},
             "capabilities": {"experimentalApi": True, "optOutNotificationMethods": [
@@ -813,6 +1021,7 @@ def run(args):
         result["children"] = snapshots
         result["child_reports"] = public_child_reports(snapshots, client.public_messages, client.collab)
         result["native_subagent_activity"] = client.activities
+        result['observed_execution_evidence'] = client.observed_execution_evidence
         result["native_collaboration_calls"] = list(client.collab.values())
         result["raw_collaboration_receipts"] = client.raw_collaboration_receipts
         result["public_messages"] = list(client.public_messages.values())

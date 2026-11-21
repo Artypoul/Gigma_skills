@@ -1,0 +1,34 @@
+{
+  "id": "D10",
+  "prompt": "Synthetic owner-decision case D10: Later PR permission is not target selection. Preserve all specified constraints; do not infer missing permissions.",
+  "turns": [
+    "Target is not selected.",
+    "You can create a PR later."
+  ],
+  "criteria": {
+    "target_selection": "not_checked",
+    "pr_intent": "satisfied"
+  },
+  "mandatory": [
+    "target_selection",
+    "pr_intent"
+  ],
+  "allowed_paths": [
+    "docs/owner-decisions/d10-artifact.md"
+  ],
+  "preserve": {},
+  "cancelled": [],
+  "locked_facts": {},
+  "forbid_keys": [
+    "target"
+  ],
+  "expected_status": "incomplete",
+  "fixture_scope": "offline_only",
+  "review_history": [
+    {
+      "event_line": 10,
+      "verdict": "APPROVE",
+      "blocking": []
+    }
+  ]
+}

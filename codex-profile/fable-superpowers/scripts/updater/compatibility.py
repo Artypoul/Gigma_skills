@@ -306,6 +306,41 @@ def _baseline_file_inventory(root: Path) -> dict[str, str]:
     return inventory
 
 
+def fixture_inventory(fixture: Path, paths: list[str]) -> dict[str, str]:
+    """Controller-owned, relative path / SHA-256 inventory including new files."""
+    root = Path(fixture).resolve(strict=True)
+    if not root.is_dir() or root.is_symlink():
+        raise ValueError('Fixture inventory root must be an actual directory.')
+    values = {}
+    for raw in paths:
+        if not isinstance(raw, str) or not raw or '\x00' in raw:
+            raise ValueError('Invalid fixture inventory member.')
+        name = raw.replace('\\', '/')
+        parts = name.split('/')
+        if (name.startswith('/') or re.match(r'^[a-zA-Z]:', name)
+                or any(part in ('', '.', '..') for part in parts)):
+            raise ValueError('Fixture inventory member escapes its root.')
+        node = root.joinpath(*parts)
+        if node.is_symlink():
+            raise ValueError('Fixture inventory cannot traverse symlinks.')
+        if not node.exists():
+            continue
+        candidates = sorted(node.rglob('*')) if node.is_dir() else [node]
+        for candidate in candidates:
+            if candidate.is_symlink():
+                raise ValueError('Fixture inventory contains a symlink.')
+            if candidate.is_file():
+                try:
+                    relative = candidate.resolve(strict=True).relative_to(root).as_posix()
+                except ValueError as error:
+                    raise ValueError('Fixture inventory escaped its root.') from error
+                value = digest(candidate)
+                if relative in values and values[relative] != value:
+                    raise ValueError('Fixture inventory observed contradictory file contents.')
+                values[relative] = value
+    return dict(sorted(values.items()))
+
+
 def _baseline_fingerprint(inventory: dict[str, str]) -> str:
     return hashlib.sha256(json.dumps(inventory, sort_keys=True,
         separators=(',', ':')).encode('utf-8')).hexdigest()
@@ -938,9 +973,18 @@ def preflight(candidate: dict, fixtures: dict, outside: Path, run_root: Path, co
 
 def _case_run(name: str, fixture: Path, run_root: Path, codex_home: Path) -> dict:
     output = run_root/'observations'/name
+    watch = [fixture/'tests'] if name in {'bug_fix', 'approved_plan'} else []
+    if name == 'local_research':
+        watch.extend([fixture/'BRIEF.md', fixture/'sources'])
+    criteria_args = ['--criteria-file', str(RESOURCES/'criteria'/'local_research.json')] if name == 'local_research' else []
+    if name == 'bug_fix':
+        watch.append(fixture/'discounts.py')
+    elif name == 'approved_plan':
+        watch.extend([fixture/'invoice_helpers.py', fixture/'invoice_cli.py', fixture/'APPROVED_PLAN.md'])
+    watch_args = [arg for path in watch for arg in ('--watch', str(path))]
     result = _cmd([sys.executable,RESOURCES/'appserver_eval.py','--cwd',fixture,
         '--prompt-file',RESOURCES/'prompts'/f'{name}.txt','--out-dir',output,'--codex-home',codex_home,
-        '--collection-only','--sandbox','workspace-write'],
+        '--collection-only','--sandbox','workspace-write', *watch_args, *criteria_args],
         HERE,env=_env(codex_home),timeout=1000)
     if result['exit_code'] or not (output/'result.json').exists():
         raise RuntimeError(f'{name}: app-server run failed: '+result['stderr'][:600])
@@ -950,8 +994,10 @@ def _case_run(name: str, fixture: Path, run_root: Path, codex_home: Path) -> dic
     return native
 
 
-def native_items(path: Path, root_id: str) -> list:
+def native_items(path: Path, root_id: str, observed_receipts=None) -> list:
     result = []
+    observed = {row['event_line']:row for row in (observed_receipts or [])
+                if isinstance(row, dict) and isinstance(row.get('event_line'), int)}
     seen = set()
     for number,line in enumerate(path.read_text(encoding='utf-8').splitlines(),1):
         event = json.loads(line)
@@ -965,7 +1011,13 @@ def native_items(path: Path, root_id: str) -> list:
         if key in seen:
             continue
         seen.add(key)
-        result.append({'event_line':number,**item})
+        # Never trust an agent-supplied controller_evidence property.
+        row = {'event_line': number, **{k:v for k,v in item.items()
+                                      if k != 'controller_evidence'}}
+        recorded = observed.get(number)
+        if recorded and recorded.get('execution_id') == item.get('id'):
+            row['controller_evidence'] = recorded
+        result.append(row)
     return result
 
 
@@ -1304,52 +1356,129 @@ def _writes_path(item: dict, fixture: Path, relative: str) -> bool:
     return False
 
 
-def _green_test(item: dict) -> bool:
-    output=item.get('aggregatedOutput') or ''
-    return (item.get('type')=='commandExecution' and item.get('exitCode')==0
-        and 'unittest' in item.get('command','')
-        and bool(re.search(r'\bRan\s+\d+\s+tests?\b',output)) and bool(re.search(r'(?m)^OK\s*$',output)))
+def _observed_test_run(item: dict, fixture: Path, target: str, *, green: bool) -> bool:
+    """Require a completed controller-observed test for the actual target."""
+    if item.get('type') != 'commandExecution' or 'unittest' not in item.get('command', ''):
+        return False
+    if (item.get('exitCode') != 0) == green:
+        return False
+    output = item.get('aggregatedOutput') or ''
+    count = re.search(r'\bRan\s+(\d+)\s+tests?\b', output)
+    if not count or int(count.group(1)) <= 0:
+        return False
+    if green and not re.search(r'(?m)^OK\s*$', output):
+        return False
+    if not green and not re.search(r'FAIL(?:ED)?|ERROR|AssertionError|ImportError|NameError', output):
+        return False
+    evidence = item.get('controller_evidence')
+    if not isinstance(evidence, dict):
+        return False
+    if (not isinstance(evidence.get('execution_id'), str)
+            or not evidence['execution_id']
+            or evidence.get('event_line') != item.get('event_line')
+            or _normpath(evidence.get('cwd', '')) != _normpath(fixture)
+            or evidence.get('tests_run') != int(count.group(1))
+            or evidence.get('command') != item.get('command')
+            or evidence.get('exit_code') != item.get('exitCode')
+            or (item.get('id') is not None and evidence['execution_id'] != item['id'])):
+        return False
+    inventory = evidence.get('inventory')
+    sources = evidence.get('source_test_inventory')
+    test_ids = evidence.get('test_ids')
+    if (not isinstance(inventory, dict) or not isinstance(sources, dict)
+            or not isinstance(test_ids, list) or not test_ids
+            or not all(isinstance(x, str) and x for x in test_ids)):
+        return False
+    if sources != {key: value for key, value in inventory.items()
+                   if key.startswith('tests/') and key.endswith('.py')}:
+        return False
+    if target not in sources or not re.fullmatch(r'[a-fA-F0-9]{64}', sources[target]):
+        return False
+    name = Path(target).stem
+    matching = [test_id for test_id in test_ids if re.search(
+        r'(?:^|\.)' + re.escape(name) + r'(?:\.|$)', test_id)]
+    if not matching:
+        return False
+    # A collector receipt may identify only tests that appear in the actual
+    # unittest output, not names copied from an agent's success narration.
+    return all(test_id.split('.')[-1] in output
+               and name in output for test_id in matching)
+
+
+def _green_test(item: dict, fixture: Path, target: str) -> bool:
+    return _observed_test_run(item, fixture, target, green=True)
 
 
 def tdd_ordering(name: str, fixture: Path, items: list) -> dict:
-    """Use observed root events, not final claims, to check RED/write/GREEN order."""
+    """Keep correctness, RED→GREEN chronology, and final byte freshness distinct."""
+    cases = {
+        'bug_fix': [('discounts.py', 'tests/test_discounts.py', None)],
+        'approved_plan': [
+            ('invoice_helpers.py', 'tests/test_invoice_helpers.py', 'normalize_currency'),
+            ('invoice_cli.py', 'tests/test_invoice_cli.py', 'format_invoice'),
+        ],
+    }
+    if name not in cases:
+        raise ValueError('No TDD compatibility target for this case.')
+    targets = cases[name]
+    watched = ['tests', *(production for production, _, _ in targets)]
+    if name == 'approved_plan':
+        watched.append('APPROVED_PLAN.md')
+    final_inventory = fixture_inventory(fixture, watched)
+    if any(production not in final_inventory or test not in final_inventory
+           for production, test, _ in targets):
+        raise RuntimeError(f'{name}: required implementation/test file missing from final inventory.')
+
     def writes(relative):
-        return [index for index,item in enumerate(items) if _writes_path(item,fixture,relative)]
-    def red_points(interface=None):
-        result=[]
-        for index,item in enumerate(items):
-            output=item.get('aggregatedOutput') or ''
-            if item.get('type')!='commandExecution' or item.get('exitCode') in [None,0] or 'unittest' not in item.get('command',''):
-                continue
-            if interface is None:
-                valid='190' in output and '180' in output and bool(re.search(r'AssertionError|FAIL(?:ED)?',output))
-            else:
-                valid=interface in output and bool(re.search(r'ImportError|AttributeError|NameError|cannot import name|has no attribute',output))
-            if valid:result.append(index)
-        return result
-    green=[index for index,item in enumerate(items) if _green_test(item)]
-    tasks=[('discounts.py','tests/test_discounts.py',None)] if name=='bug_fix' else [
-        ('invoice_helpers.py','tests/test_invoice_helpers.py','normalize_currency'),
-        ('invoice_cli.py','tests/test_invoice_cli.py','format_invoice')]
-    proof=[]
-    previous_green=-1
-    for module,test_file,interface in tasks:
-        production=writes(module)
-        test_writes=writes(test_file)
-        if not production or not test_writes:
-            raise RuntimeError(f'{name}: no observable test/implementation writes for {module}.')
-        red=[i for i in red_points(interface) if previous_green<i<min(production) and any(j<i for j in test_writes)]
-        if not red:
-            raise RuntimeError(f'{name}: genuine RED must precede the first production write for {module}.')
-        after=[i for i in green if i>max(production)]
-        if not after:
-            raise RuntimeError(f'{name}: GREEN must follow implementation for {module}.')
-        previous_green=min(after)
-        proof.append({'module':module,'red_event_line':items[red[0]]['event_line'],
-            'first_production_event_line':items[min(production)]['event_line'],
-            'last_production_event_line':items[max(production)]['event_line'],
-            'green_event_line':items[previous_green]['event_line']})
-    return {'passed':True,'tasks':proof}
+        return [i for i, item in enumerate(items)
+                if (_writes_path(item, fixture, relative)
+                    or relative in (item.get('controller_evidence') or {}).get('changed_paths', []))]
+
+    proof, previous_green = [], -1
+    all_green = []
+    for production, target, interface in targets:
+        production_writes = writes(production)
+        test_writes = writes(target)
+        if not production_writes or not test_writes:
+            raise RuntimeError(f'{name}: no observed test/implementation writes for {production}.')
+        reds = [i for i, item in enumerate(items) if previous_green < i < min(production_writes)
+                and any(j < i for j in test_writes)
+                and _observed_test_run(item, fixture, target, green=False)
+                and (interface is None or interface in (item.get('aggregatedOutput') or ''))]
+        if not reds:
+            raise RuntimeError(f'{name}: genuine controller-observed RED must precede production write for {production}.')
+        greens = [i for i, item in enumerate(items) if i > max(production_writes + test_writes)
+                  and _green_test(item, fixture, target)]
+        if not greens:
+            raise RuntimeError(f'{name}: current target GREEN lacks observed test execution evidence for {production}.')
+        selected = min(greens)
+        previous_green = selected
+        all_green.append(selected)
+        proof.append({'module': production, 'test_file': target,
+                      'red_event_line': items[reds[0]]['event_line'],
+                      'first_production_event_line': items[min(production_writes)]['event_line'],
+                      'last_production_event_line': items[max(production_writes)]['event_line'],
+                      'green_event_line': items[selected]['event_line']})
+    # The last related GREEN is not stale merely because a different test
+    # ran later. It must cover each target and the whole FINAL inventory.
+    fresh = [item for item in items if all(_green_test(item, fixture, target)
+                 for _, target, _ in targets)
+             and item.get('controller_evidence', {}).get('inventory') == final_inventory]
+    if not fresh:
+        # For multi-interface approved plans the final combined suite must
+        # verify both targets, not just its last interface's tests.
+        raise RuntimeError(f'{name}: GREEN inventory differs from the current implementation/tests or lacks all targets.')
+    last_fresh = max(item['event_line'] for item in fresh)
+    last_change = max((item['event_line'] for item in items
+                       if any(writes_relative in (item.get('controller_evidence') or {}).get('changed_paths', [])
+                              or _writes_path(item, fixture, writes_relative)
+                              for writes_relative in final_inventory)), default=-1)
+    if last_change >= last_fresh:
+        raise RuntimeError(f'{name}: current GREEN is stale after the latest observed file change.')
+    return {'passed': True, 'tasks': proof, 'final_inventory': final_inventory,
+            'current_correctness': 'requires_independent_controller_run',
+            'red_green_order': 'controller_observed',
+            'final_green_event_line': last_fresh}
 
 
 def _tree_status(fixture: Path, codex_home: Path) -> list:
@@ -1358,11 +1487,85 @@ def _tree_status(fixture: Path, codex_home: Path) -> list:
     return [x[3:] for x in result['stdout'].split('\0') if x]
 
 
-def assess_case(name: str, fixture: Path, native: dict, observed: Path, expected: dict, fable: dict, codex_home: Path | None = None) -> dict:
+def research_semantic_evidence(fixture: Path, items: list, semantic_review: dict | None,
+                               *, allow_offline_fixture: bool = False) -> dict:
+    """Bind a separate semantic judgement to one complete final answer and sources.
+
+    Offline fixture evidence exercises only this mechanical acceptance adapter;
+    it is never live agent or independent model evidence.
+    """
+    if not isinstance(semantic_review, dict):
+        raise RuntimeError('semantic_review_required: independent research assessment is unavailable.')
+    finals = [item for item in items if item.get('type') == 'agentMessage'
+              and item.get('phase') == 'final_answer' and isinstance(item.get('text'), str)
+              and item['text'].strip()]
+    if not finals:
+        raise RuntimeError('semantic_review_required: exact final answer was not observed.')
+    finals.sort(key=lambda item: item.get('event_line', -1))
+    answer = finals[-1]['text']
+    criteria_path = RESOURCES/'criteria'/'local_research.json'
+    rubric = json.loads(criteria_path.read_text(encoding='utf-8'))
+    expected_ids = set(rubric['semantic'])
+    if expected_ids != {'choice_satisfies_brief', 'limitations_supported',
+                        'citations_support_claims'}:
+        raise RuntimeError('Research semantic rubric does not match approved criteria.')
+    sources = fixture_inventory(fixture, ['BRIEF.md', 'sources'])
+    if set(sources) != {'BRIEF.md', 'sources/memory-queue.md', 'sources/sqlite-queue.md'}:
+        raise RuntimeError('Research semantic source inventory is incomplete.')
+    subject = {
+        'final_answer_sha256': hashlib.sha256(answer.encode('utf-8')).hexdigest(),
+        'source_inventory': sources,
+        'criteria_sha256': digest(criteria_path),
+    }
+    if semantic_review.get('subject') != subject:
+        raise RuntimeError('semantic subject stale: answer, source or rubric digest differs.')
+    mode = semantic_review.get('review_mode')
+    if mode == 'offline_fixture':
+        if not allow_offline_fixture:
+            raise RuntimeError('independent_live semantic review required; offline fixture is insufficient.')
+    elif mode == 'independent_live':
+        observation = semantic_review.get('observed_reviewer')
+        if (not isinstance(observation, dict)
+                or observation.get('thread_id') != semantic_review.get('reviewer_thread_id')
+                or observation.get('status') != 'completed'
+                or observation.get('source') != 'independent_controller'):
+            raise RuntimeError('independent_live semantic review lacks observed reviewer lifecycle.')
+    else:
+        raise RuntimeError('semantic_review_required: no approved evaluation source.')
+    if (not isinstance(semantic_review.get('reviewer'), str)
+            or not semantic_review['reviewer'].strip()
+            or not isinstance(semantic_review.get('reviewer_thread_id'), str)
+            or not semantic_review['reviewer_thread_id'].strip()
+            or semantic_review['reviewer_thread_id'] == 'root'):
+        raise RuntimeError('semantic_review_required: reviewer is missing or not independent.')
+    checks = semantic_review.get('criteria')
+    if not isinstance(checks, dict) or set(checks) != expected_ids:
+        raise RuntimeError('Independent semantic review does not cover complete criterion set.')
+    for key, check in checks.items():
+        if (not isinstance(check, dict) or check.get('status') != 'satisfied'
+                or not isinstance(check.get('evidence'), str) or not check['evidence'].strip()):
+            raise RuntimeError(f'semantic criterion {key} violated, unavailable or not evidenced.')
+    citations = re.findall(r'\b((?:memory-queue|sqlite-queue)\.md):(\d+)\b', answer)
+    mentioned = {name for name, _ in citations}
+    if mentioned != {'memory-queue.md', 'sqlite-queue.md'}:
+        raise RuntimeError('semantic criterion citations_support_claims: source citation missing.')
+    for filename, raw_line in citations:
+        source_lines = (fixture/'sources'/filename).read_text(encoding='utf-8').splitlines()
+        if int(raw_line) < 1 or int(raw_line) > len(source_lines):
+            raise RuntimeError('semantic criterion citations_support_claims: invalid line offset.')
+    return {'passed': True, 'checks': checks, 'subject': subject,
+            'reviewer': semantic_review['reviewer'],
+            'evidence_tier': mode,
+            'live_independent_review': mode == 'independent_live'}
+
+
+def assess_case(name: str, fixture: Path, native: dict, observed: Path, expected: dict, fable: dict, codex_home: Path | None = None, *, semantic_review: dict | None = None) -> dict:
     if native.get('unexpected_client_requests'):
         raise RuntimeError(f'{name}: an interactive approval/input request occurred in an unattended compatibility trial.')
     codex_home=_fixture_home(fable,codex_home)
-    items=native_items(observed/'appserver-events.jsonl',native['thread_id'])
+    items=native_items(observed/'appserver-events.jsonl',native['thread_id'],
+                       native.get('observed_execution_evidence'))
+    fable={**fable, 'cwd':str(fixture)}
     loaded=observed_skill_reads(items,expected,fable)
     if 'fable5-codex' not in loaded or not REQUIRED_BY_CASE[name].issubset(loaded):
         raise RuntimeError(f'{name}: required instructions were not actually read from this candidate.')
@@ -1391,6 +1594,8 @@ def assess_case(name: str, fixture: Path, native: dict, observed: Path, expected
                 raise RuntimeError('Research answer lacks the supported choice or source-line citations.')
             forbidden_skills={'brainstorming','writing-plans','executing-plans','test-driven-development','using-git-worktrees'}
             if forbidden_skills.intersection(loaded):raise RuntimeError('Research started an engineering workflow.')
+            checks['research_semantic']=research_semantic_evidence(
+                fixture, items, semantic_review)
     elif name=='small_config':
         if set(paths)!={'settings.json'} or json.loads((fixture/'settings.json').read_text())!={'retry_count':5,'timeout_seconds':10,'log_level':'info'}:
             raise RuntimeError('Mechanical edit changed more than the requested setting.')
@@ -1409,7 +1614,22 @@ def assess_case(name: str, fixture: Path, native: dict, observed: Path, expected
             original=_fixture_git(['show','HEAD:APPROVED_PLAN.md'],fixture,codex_home)['stdout'].replace('\r\n','\n')
             actual=(fixture/'APPROVED_PLAN.md').read_text(encoding='utf-8').replace('\r\n','\n').replace('- [x]','- [ ]')
             if actual!=original:raise RuntimeError('Approved plan requirements changed or a new plan replaced it.')
-            checks['independent_review']=review_evidence(native,after_event_line=max(task['last_production_event_line'] for task in checks['tdd_ordering']['tasks']))
+            subject = {'files': checks['tdd_ordering']['final_inventory'],
+                       'criteria_sha256': digest(fixture/'APPROVED_PLAN.md')}
+            native = dict(native)
+            native['observed_test_receipts'] = [
+                {'id': row['execution_id'], 'event_line': row['event_line'],
+                 'command': row['command'], 'exit_code': row['exit_code'],
+                 'tests_run': row['tests_run'], 'files': row['inventory']}
+                for row in native.get('observed_execution_evidence', [])
+                if (row.get('exit_code') == 0 and row.get('tests_run', 0) > 0
+                    and row.get('inventory') == subject['files']
+                    and isinstance(row.get('execution_id'), str))]
+            checks['independent_review'] = review_evidence(
+                native,
+                after_event_line=max(task['last_production_event_line']
+                                     for task in checks['tdd_ordering']['tasks']),
+                expected_subject=subject)
         direct=_fixture_python(['-c',code],fixture,codex_home)
         if direct['exit_code']:raise RuntimeError(f'{name}: direct acceptance checks failed.')
         checks['direct_contract_passed']=True

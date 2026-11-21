@@ -511,16 +511,14 @@ class CompatibilityUnitTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):c.review_evidence(native)
 
     def test_bug_red_before_production_and_green_after(self):
-        fixture=Path('C:/fixture')
-        def write(path,line):return {'type':'fileChange','event_line':line,'changes':[{'path':str(fixture/path)}]}
-        red={'type':'commandExecution','event_line':2,'command':'python -m unittest','exitCode':1,'aggregatedOutput':'AssertionError: 190 != 180\nFAILED'}
-        green={'type':'commandExecution','event_line':4,'command':'python -m unittest','exitCode':0,'aggregatedOutput':'Ran 6 tests in 0.001s\n\nOK\n'}
-        items=[write('tests/test_discounts.py',1),red,write('discounts.py',3),green]
-        self.assertTrue(c.tdd_ordering('bug_fix',fixture,items)['passed'])
-        with self.assertRaisesRegex(RuntimeError,'RED must precede'):
-            c.tdd_ordering('bug_fix',fixture,[items[2],items[0],red,green])
-        with self.assertRaisesRegex(RuntimeError,'GREEN must follow'):
-            c.tdd_ordering('bug_fix',fixture,[items[0],red,green,items[2]])
+        with tempfile.TemporaryDirectory() as td:
+            fixture = TestInventoryFreshnessRegressionTests().fixture(Path(td))
+            items = TestInventoryFreshnessRegressionTests().items(fixture)
+            self.assertTrue(c.tdd_ordering('bug_fix',fixture,items)['passed'])
+            with self.assertRaisesRegex(RuntimeError,'RED must precede'):
+                c.tdd_ordering('bug_fix',fixture,[items[2],items[0],items[1],items[3]])
+            with self.assertRaisesRegex(RuntimeError,'GREEN'):
+                c.tdd_ordering('bug_fix',fixture,[items[0],items[1],items[3],items[2]])
 
     def test_hash_and_diff_reads_are_not_writes_to_mentioned_source(self):
         fixture=Path(tempfile.gettempdir()).resolve()/'fixture'
@@ -546,26 +544,56 @@ class CompatibilityUnitTests(unittest.TestCase):
         self.assertTrue(c._writes_path({'type':'commandExecution','command':mixed},fixture,'invoice_helpers.py'))
 
     def test_production_command_write_after_green_is_rejected(self):
-        fixture=Path('C:/fixture')
-        items=[{'type':'fileChange','event_line':1,'changes':[{'path':str(fixture/'tests/test_discounts.py')}]},
-            {'type':'commandExecution','event_line':2,'command':'python -m unittest','exitCode':1,'aggregatedOutput':'AssertionError: 190 != 180\nFAILED'},
-            {'type':'fileChange','event_line':3,'changes':[{'path':str(fixture/'discounts.py')}]},
-            {'type':'commandExecution','event_line':4,'command':'python -m unittest','exitCode':0,'aggregatedOutput':'Ran 6 tests in 0.001s\nOK\n'},
-            {'type':'commandExecution','event_line':5,'command':"Set-Content -LiteralPath 'discounts.py' -Value 'changed after green'",'exitCode':0}]
-        with self.assertRaisesRegex(RuntimeError,'GREEN must follow'):
-            c.tdd_ordering('bug_fix',fixture,items)
+        with tempfile.TemporaryDirectory() as td:
+            fixture = TestInventoryFreshnessRegressionTests().fixture(Path(td))
+            items = TestInventoryFreshnessRegressionTests().items(fixture)
+            items.append({'type':'commandExecution','event_line':5,
+                'command':"Set-Content -LiteralPath 'discounts.py' -Value 'changed after green'",
+                'exitCode':0})
+            with self.assertRaisesRegex(RuntimeError,'GREEN|stale'):
+                c.tdd_ordering('bug_fix',fixture,items)
 
     def test_plan_requires_each_interface_red_before_its_module(self):
-        fixture=Path('C:/fixture')
-        def write(path,line):return {'type':'fileChange','event_line':line,'changes':[{'path':str(fixture/path)}]}
-        def red(name,line):return {'type':'commandExecution','event_line':line,'command':'python -m unittest','exitCode':1,'aggregatedOutput':f'ImportError: cannot import name {name}'}
-        def green(line):return {'type':'commandExecution','event_line':line,'command':'python -m unittest','exitCode':0,'aggregatedOutput':'Ran 8 tests in 0.001s\nOK\n'}
-        items=[write('tests/test_invoice_helpers.py',1),red('normalize_currency',2),write('invoice_helpers.py',3),green(4),
-            write('tests/test_invoice_cli.py',5),red('format_invoice',6),write('invoice_cli.py',7),green(8)]
-        self.assertTrue(c.tdd_ordering('approved_plan',fixture,items)['passed'])
-        bad=items[:5]+[items[6],items[5],items[7]]
-        with self.assertRaisesRegex(RuntimeError,'RED must precede'):
-            c.tdd_ordering('approved_plan',fixture,bad)
+        with tempfile.TemporaryDirectory() as td:
+            fixture = Path(td)/'fixture'
+            (fixture/'tests').mkdir(parents=True)
+            for path in ('invoice_helpers.py','invoice_cli.py','APPROVED_PLAN.md',
+                         'tests/test_invoice_helpers.py','tests/test_invoice_cli.py'):
+                (fixture/path).write_text('canonical fixture source\n')
+            inventory = c.fixture_inventory(fixture, ['tests','invoice_helpers.py',
+                                            'invoice_cli.py','APPROVED_PLAN.md'])
+            tests = {key:value for key,value in inventory.items() if key.startswith('tests/')}
+            def write(path,line):
+                return {'type':'fileChange','event_line':line,
+                        'changes':[{'path':str(fixture/path)}]}
+            def run(line,target,failed=False,interface=None,all_targets=False):
+                ids = (['test_invoice_helpers.Suite.test_helper',
+                        'test_invoice_cli.Suite.test_cli'] if all_targets else
+                       [f'{Path(target).stem}.Suite.test_{"helper" if "helpers" in target else "cli"}'])
+                output = '\n'.join(f'{id.split(".")[-1]} ({id.rsplit(".",1)[0]}) ... ' +
+                                   ('FAIL' if failed else 'ok') for id in ids)
+                if interface:
+                    output += '\nImportError: cannot import name ' + interface
+                output += f'\nRan {len(ids)} tests in 0.001s\n' + ('FAILED' if failed else 'OK') + '\n'
+                cmd = 'python -B -m unittest discover -s tests -v'
+                receipt = {'execution_id':f'test-{line}', 'cwd':str(fixture),
+                           'event_line':line, 'command':cmd, 'exit_code':1 if failed else 0,
+                           'tests_run':len(ids), 'test_ids':ids,
+                           'source_test_inventory':tests, 'inventory':inventory}
+                return {'type':'commandExecution','event_line':line,'command':cmd,
+                        'exitCode':1 if failed else 0,'aggregatedOutput':output,
+                        'controller_evidence':receipt}
+            events = [write('tests/test_invoice_helpers.py',1),
+                run(2,'tests/test_invoice_helpers.py',failed=True,interface='normalize_currency'),
+                write('invoice_helpers.py',3), run(4,'tests/test_invoice_helpers.py'),
+                write('tests/test_invoice_cli.py',5),
+                run(6,'tests/test_invoice_cli.py',failed=True,interface='format_invoice'),
+                write('invoice_cli.py',7),
+                run(8,'tests/test_invoice_cli.py',all_targets=True)]
+            self.assertTrue(c.tdd_ordering('approved_plan',fixture,events)['passed'])
+            bad = events[:5] + [events[6],events[5],events[7]]
+            with self.assertRaisesRegex(RuntimeError,'RED must precede'):
+                c.tdd_ordering('approved_plan',fixture,bad)
 
     def test_inventory_rejects_traversal_and_normalizes_case(self):
         self.assertEqual(c._inventory_map([{'Path':'skills\\x\\SKILL.md','SHA256':'A'*64}]),{'skills/x/SKILL.md':'a'*64})
@@ -766,6 +794,254 @@ class CompleteSkillReadIntegrityRegressionTests(unittest.TestCase):
                      self.page(target, source, split, body[split:], total=len(body), line=21)]
             self.assertEqual(self.read(pages, target, source)['brainstorming']['method'],
                              'complete_mcp_read')
+
+
+
+class TestInventoryFreshnessRegressionTests(unittest.TestCase):
+    """A6: a green string is not a test receipt for the final file inventory."""
+
+    def fixture(self, root):
+        fixture = root / 'fixture'
+        (fixture / 'tests').mkdir(parents=True)
+        (fixture / 'tests' / 'test_discounts.py').write_text(
+            "import unittest\nfrom discounts import apply_discount\n"
+            "class TestDiscount(unittest.TestCase):\n"
+            "    def test_discount(self): self.assertEqual(apply_discount(200,10),180)\n")
+        (fixture / 'discounts.py').write_text(
+            "def apply_discount(amount, percent): return amount - amount * percent / 100\n")
+        return fixture
+
+    @staticmethod
+    def inventory(fixture):
+        return {p.relative_to(fixture).as_posix(): c.digest(p)
+                for p in sorted(fixture.rglob('*.py')) if p.is_file()}
+
+    def items(self, fixture, *, green_output='test_discount (test_discounts.TestDiscount.test_discount) ... ok\nRan 1 test in 0.001s\n\nOK\n',
+              green_command='python -B -m unittest discover -s tests -v'):
+        source = self.inventory(fixture)
+        def write(path, line):
+            return {'type':'fileChange', 'event_line':line,
+                    'changes':[{'path':str(fixture / path)}]}
+        red = {'type':'commandExecution', 'event_line':2,
+               'command':'python -B -m unittest discover -s tests -v',
+               'exitCode':1, 'aggregatedOutput':'test_discount (test_discounts.TestDiscount.test_discount) ... FAIL\nAssertionError: 190 != 180\nRan 1 test in 0.001s\nFAILED',
+               'controller_evidence': {'execution_id':'red-2', 'cwd':str(fixture),
+                   'event_line':2,'tests_run':1,'test_ids':['test_discounts.TestDiscount.test_discount'],
+                   'command':'python -B -m unittest discover -s tests -v','exit_code':1,
+                   'source_test_inventory':{'tests/test_discounts.py':source['tests/test_discounts.py']},
+                   'inventory':source}}
+        green = {'type':'commandExecution', 'event_line':4, 'command':green_command,
+                 'exitCode':0, 'aggregatedOutput':green_output,
+                 'controller_evidence': {'execution_id':'green-4', 'cwd':str(fixture),
+                     'event_line':4,'tests_run':1, 'command':green_command,'exit_code':0,
+                     'test_ids':['test_discounts.TestDiscount.test_discount'],
+                     'source_test_inventory':{'tests/test_discounts.py':source['tests/test_discounts.py']},
+                     'inventory':source}}
+        return [write('tests/test_discounts.py',1), red, write('discounts.py',3), green]
+
+    def test_fixture_inventory_detects_additions_removals_and_changes(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self.fixture(Path(td))
+            before = c.fixture_inventory(fixture, ['discounts.py', 'tests'])
+            self.assertEqual(set(before), {'discounts.py','tests/test_discounts.py'})
+            (fixture/'tests'/'test_new_case.py').write_text('def test_new(): pass\n')
+            added = c.fixture_inventory(fixture, ['discounts.py', 'tests'])
+            self.assertIn('tests/test_new_case.py', added)
+            (fixture/'tests'/'test_discounts.py').unlink()
+            removed = c.fixture_inventory(fixture, ['discounts.py', 'tests'])
+            self.assertNotIn('tests/test_discounts.py', removed)
+            self.assertNotEqual(before, added)
+            self.assertNotEqual(added, removed)
+            (fixture/'discounts.py').write_text('def changed(): pass\n')
+            self.assertNotEqual(removed, c.fixture_inventory(fixture,['discounts.py','tests']))
+            with self.assertRaises(ValueError):
+                c.fixture_inventory(fixture, ['../escape.py'])
+
+    def test_unrelated_suite_cannot_close_green(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self.fixture(Path(td))
+            unrelated = fixture / 'unrelated'
+            unrelated.mkdir()
+            (unrelated/'test_arithmetic.py').write_text(
+                'import unittest\nclass Arithmetic(unittest.TestCase):\n'
+                '    def test_add(self): self.assertEqual(1+1,2)\n')
+            proc = subprocess.run([sys.executable,'-B','-m','unittest','discover','-s',
+                                   'unrelated','-v'], cwd=fixture,text=True,capture_output=True)
+            self.assertEqual(proc.returncode,0,proc.stderr)
+            self.assertIn('Ran 1 test',proc.stderr)
+            items = self.items(fixture,green_output=proc.stdout + proc.stderr,
+                               green_command='python -B -m unittest discover -s unrelated -v')
+            with self.assertRaisesRegex(RuntimeError,'GREEN|test|target|evidence|suite'):
+                c.tdd_ordering('bug_fix',fixture,items)
+
+    def test_post_green_inventory_change_invalidates_evidence(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self.fixture(Path(td))
+            items = self.items(fixture)
+            old = c.digest(fixture/'discounts.py')
+            replacement = fixture/'replacement.py'
+            replacement.write_text('def apply_discount(amount, percent): return 100\n')
+            shutil.copyfile(replacement,fixture/'discounts.py')
+            self.assertNotEqual(old,c.digest(fixture/'discounts.py'))
+            items.append({'type':'commandExecution','event_line':5,'exitCode':0,
+                          'command':"shutil.copyfile('replacement.py', 'discounts.py')"})
+            with self.assertRaisesRegex(RuntimeError,'GREEN|inventory|changed|stale'):
+                c.tdd_ordering('bug_fix',fixture,items)
+
+    def test_tests_only_change_invalidates_green(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self.fixture(Path(td))
+            items = self.items(fixture)
+            test = fixture/'tests'/'test_discounts.py'
+            test.write_text(test.read_text() + '\n# modified after green\n')
+            items.append({'type':'commandExecution', 'event_line':5, 'exitCode':0,
+                          'command':"Path('tests/test_discounts.py').write_text('revised')"})
+            with self.assertRaisesRegex(RuntimeError,'GREEN|inventory|changed|stale'):
+                c.tdd_ordering('bug_fix',fixture,items)
+
+    def test_controller_receipts_are_required_for_tdd_proof(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self.fixture(Path(td))
+            items = self.items(fixture)
+            items[-1].pop('controller_evidence')
+            with self.assertRaisesRegex(RuntimeError,'GREEN|receipt|evidence|controller'):
+                c.tdd_ordering('bug_fix',fixture,items)
+
+    def test_read_only_hash_after_green_keeps_fresh_proof(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self.fixture(Path(td))
+            items = self.items(fixture)
+            items.append({'type':'commandExecution','event_line':5,'exitCode':0,
+                          'command':"Get-FileHash -LiteralPath 'discounts.py'"})
+            self.assertTrue(c.tdd_ordering('bug_fix',fixture,items)['passed'])
+
+    @unittest.skipUnless(shutil.which('pwsh'), 'real PowerShell runner not installed')
+    def test_copy_item_after_green_invalidates_evidence_windows(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self.fixture(Path(td))
+            items = self.items(fixture)
+            (fixture/'replacement.py').write_text(
+                'def apply_discount(amount,percent): return 42\n')
+            result = subprocess.run(['pwsh','-NoProfile','-Command',
+                "Copy-Item -LiteralPath 'replacement.py' -Destination 'discounts.py' -Force"],
+                cwd=fixture, capture_output=True, text=True)
+            self.assertEqual(result.returncode,0,result.stderr)
+            items.append({'type':'commandExecution','event_line':5,'exitCode':0,
+                          'command':"Copy-Item -LiteralPath 'replacement.py' -Destination 'discounts.py' -Force"})
+            with self.assertRaisesRegex(RuntimeError,'GREEN|inventory|changed|stale'):
+                c.tdd_ordering('bug_fix',fixture,items)
+
+
+
+class ResearchSemanticAcceptanceRegressionTests(unittest.TestCase):
+    """A5: real source and final answer require a separate bound judgement."""
+
+    @staticmethod
+    def answer(valid):
+        if not valid:
+            return ('Choose the in-memory queue for durable multi-process jobs. '
+                    'Do not use SQLite. memory-queue.md:2 sqlite-queue.md:3')
+        return ('Recommend SQLite for three producer processes and persistence after '
+                'restart: sqlite-queue.md:3 and sqlite-queue.md:4. '
+                'The memory queue is per-process and not durable: memory-queue.md:2 '
+                'and memory-queue.md:3. SQLite writers serialize (sqlite-queue.md:5); '
+                'the consumer is at-least-once, so redelivery is possible (sqlite-queue.md:6).')
+
+    @staticmethod
+    def fixture(root):
+        fixture = root/'research'
+        shutil.copytree(c.RESOURCES/'fixtures'/'local_research',fixture)
+        return fixture
+
+    @staticmethod
+    def item(text, line=20, phase='final_answer'):
+        return {'type':'agentMessage','event_line':line,'text':text,'phase':phase}
+
+    def review(self, fixture, answer, *, mode='offline_fixture'):
+        criteria = c.RESOURCES/'criteria'/'local_research.json'
+        source = c.fixture_inventory(fixture,['BRIEF.md','sources'])
+        subject = {'final_answer_sha256':hashlib.sha256(answer.encode('utf-8')).hexdigest(),
+                   'source_inventory':source,'criteria_sha256':c.digest(criteria)}
+        return {'reviewer':'offline-separate-fixture-reviewer',
+                'reviewer_thread_id':'separate-reviewer','review_mode':mode,
+                'subject':subject,
+                'criteria':{name:{'status':'satisfied','evidence':'Grounded in reviewed BRIEF.md and both source files.'}
+                    for name in ('choice_satisfies_brief','limitations_supported','citations_support_claims')}}
+
+    def call_assessor(self, fixture, items, *, semantic_review=None):
+        native={'thread_id':'root','unexpected_client_requests':[],
+                'public_messages':items}
+        patchers = [patch.object(c,'_fixture_home',return_value=fixture),
+                    patch.object(c,'native_items',return_value=items),
+                    patch.object(c,'observed_skill_reads',return_value={'fable5-codex':{'method':'complete_file_read'}}),
+                    patch.object(c,'_tree_status',return_value=[]),
+                    patch.object(c,'_fixture_git',return_value={'exit_code':0,'stdout':'worktree fixture\n','stderr':''})]
+        with ExitStack() as stack:
+            for p in patchers:
+                stack.enter_context(p)
+            kwargs = {'semantic_review':semantic_review} if semantic_review is not None else {}
+            return c.assess_case('local_research',fixture,native,fixture,{}, {'path':str(fixture/'FABLE.md')}, **kwargs)
+
+    def test_research_wrong_choice_with_expected_keywords_is_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self.fixture(Path(td))
+            with self.assertRaisesRegex(RuntimeError,'semantic_review_required'):
+                self.call_assessor(fixture,[self.item(self.answer(False))])
+
+    def test_research_missing_review_is_incomplete_even_for_good_answer(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self.fixture(Path(td))
+            with self.assertRaisesRegex(RuntimeError,'semantic_review_required'):
+                self.call_assessor(fixture,[self.item(self.answer(True))])
+
+    def test_research_final_answer_not_earlier_keyword_chatter(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self.fixture(Path(td))
+            items=[self.item(self.answer(True),line=5,phase='commentary'),
+                   self.item('No recommendation yet; sources unverified.',line=20)]
+            with self.assertRaisesRegex(RuntimeError,'semantic_review_required'):
+                self.call_assessor(fixture,items)
+
+    def test_offline_semantic_fixture_passes_only_in_explicit_fixture_mode(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self.fixture(Path(td))
+            correct = self.answer(True)
+            review = self.review(fixture,correct)
+            result = c.research_semantic_evidence(
+                fixture,[self.item(correct)],review,allow_offline_fixture=True)
+            self.assertTrue(result['passed'])
+            self.assertEqual(result['evidence_tier'],'offline_fixture')
+            with self.assertRaisesRegex(RuntimeError,'independent_live'):
+                c.research_semantic_evidence(fixture,[self.item(correct)],review)
+
+    def test_stale_answer_sources_or_rubric_cannot_reuse_approval(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self.fixture(Path(td))
+            correct = self.answer(True)
+            for changed in ('answer','source','rubric'):
+                with self.subTest(changed=changed):
+                    review = self.review(fixture,correct)
+                    if changed == 'source':
+                        (fixture/'sources'/'sqlite-queue.md').write_text('changed source\n')
+                    if changed == 'rubric':
+                        review['subject']['criteria_sha256'] = '0' * 64
+                    items = [self.item(correct+' UPDATED' if changed=='answer' else correct)]
+                    with self.assertRaisesRegex(RuntimeError,'semantic|stale|subject'):
+                        c.research_semantic_evidence(fixture,items,review,allow_offline_fixture=True)
+                    if changed == 'source':
+                        shutil.copyfile(c.RESOURCES/'fixtures'/'local_research'/'sources'/'sqlite-queue.md',
+                                        fixture/'sources'/'sqlite-queue.md')
+
+    def test_negative_independent_finding_blocks_semantic_acceptance(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self.fixture(Path(td))
+            correct = self.answer(True)
+            review = self.review(fixture,correct)
+            review['criteria']['choice_satisfies_brief'] = {
+                'status':'violated','evidence':'Reviewer found wrong recommendation.'}
+            with self.assertRaisesRegex(RuntimeError,'semantic|criterion|violated'):
+                c.research_semantic_evidence(fixture,[self.item(correct)],review,
+                                              allow_offline_fixture=True)
 
 
 class ImmutableBaselineAcceptanceTests(unittest.TestCase):

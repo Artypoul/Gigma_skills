@@ -54,6 +54,46 @@ class ExecutableTests(unittest.TestCase):
             runner.resolve_codex('missing-explicit-codex.exe')
 
 
+
+class ObservedTestReceiptRegressionTests(unittest.TestCase):
+    def test_command_completion_records_real_file_inventory_and_test_ids(self):
+        with tempfile.TemporaryDirectory() as td:
+            cwd = Path(td)
+            (cwd/'tests').mkdir()
+            (cwd/'tests'/'test_example.py').write_text(
+                'import unittest\nclass Check(unittest.TestCase):\n'
+                '    def test_behavior(self): self.assertTrue(True)\n')
+            (cwd/'source.py').write_text('VALUE = 1\n')
+            observer = runner.AppServer.__new__(runner.AppServer)
+            observer.root_id = 'parent'
+            observer.cwd = cwd
+            observer.watch_paths = [cwd/'tests',cwd/'source.py']
+            observer.observed_execution_evidence = []
+            observer.last_inventory = {}
+            item = {'id':'execution-11', 'type':'commandExecution',
+                    'command':'python -B -m unittest discover -s tests -v', 'exitCode':0,
+                    'aggregatedOutput':'test_behavior (test_example.Check.test_behavior) ... ok\n'
+                                       'Ran 1 test in 0.001s\n\nOK'}
+            observer._observe({'method':'item/completed','params':{
+                'threadId':'parent','item':item}},11)
+            self.assertEqual(len(observer.observed_execution_evidence),1)
+            row = observer.observed_execution_evidence[0]
+            self.assertEqual(row['execution_id'],'execution-11')
+            self.assertEqual(row['event_line'],11)
+            self.assertEqual(row['tests_run'],1)
+            self.assertIn('test_example.Check.test_behavior',row['test_ids'])
+            self.assertEqual(row['inventory']['source.py'],
+                             hashlib.sha256((cwd/'source.py').read_bytes()).hexdigest())
+            before = row['inventory']
+            (cwd/'source.py').write_text('VALUE = 2\n')
+            observer._observe({'method':'item/completed','params':{
+                'threadId':'parent','item':{'id':'execution-12','type':'commandExecution',
+                 'command':"Copy-Item -LiteralPath 'source-2.py' -Destination 'source.py'",
+                 'exitCode':0}}},12)
+            self.assertIn('source.py',observer.observed_execution_evidence[-1]['changed_paths'])
+            self.assertNotEqual(before,observer.observed_execution_evidence[-1]['inventory'])
+
+
 class AcceptanceTests(unittest.TestCase):
     def observation(self):
         return {'status': 'completed', 'thread_id': 'parent', 'cwd': str(ROOT),
@@ -419,6 +459,71 @@ class InteractiveFixtureTests(unittest.TestCase):
     def test_malformed_answers_fail_before_agent_start(self):
         with self.assertRaises(ValueError):
             runner.validate_answers([{'questions': [{'id': 'x', 'header': 'X', 'question': 'X?'}], 'answers': {'x': ['wrong wire shape']}}])
+
+
+
+class ResearchReviewBindingRegressionTests(unittest.TestCase):
+    """A5: a verdict for yesterday's final answer or source is not a verdict for today."""
+
+    def fixture(self, root):
+        source = root/'sources'
+        source.mkdir()
+        (source/'BRIEF.md').write_text('Three producers, durable queue\n')
+        (source/'memory-queue.md').write_text('Volatile\n')
+        (source/'sqlite-queue.md').write_text('Durable\n')
+        answer = root/'final.md'
+        answer.write_text('Choose SQLite; see sqlite-queue.md:1\n')
+        candidate = root/'candidate.md'
+        candidate.write_text('Installed frozen candidate\n')
+        watched = runner.file_inventory([source])
+        native = AcceptanceTests().observation()
+        native.update(candidate_roots=[str(candidate)],
+                      candidate_before=runner.file_inventory([candidate]),
+                      candidate_after=runner.file_inventory([candidate]),
+                      watched_before=watched, watched_after=watched)
+        result = root/'result.json'
+        result.write_text(json.dumps(native))
+        events = root/'appserver-events.jsonl'
+        events.write_text('')
+        criteria = root/'criteria.json'
+        criteria.write_text(json.dumps({'mechanical':['completed'],
+                     'semantic':['choice_satisfies_brief','limitations_supported',
+                                 'citations_support_claims']}))
+        receipt = {'reviewer':'offline-fixture-reviewer',
+                   'result_sha256':runner.sha(result),'events_sha256':runner.sha(events),
+                   'criteria_sha256':runner.sha(criteria),
+                   'final_answer_sha256':runner.sha(answer),
+                   'source_inventory':watched,
+                   'criteria':{key:{'status':'satisfied','evidence':'reviewed source lines'}
+                       for key in ['choice_satisfies_brief','limitations_supported',
+                                   'citations_support_claims']}}
+        review = root/'review.json'
+        review.write_text(json.dumps(receipt))
+        return result,review,answer,source
+
+    def test_review_rejects_modified_final_answer(self):
+        with tempfile.TemporaryDirectory() as td:
+            result,review,answer,_ = self.fixture(Path(td))
+            answer.write_text('Replaced answer after review\n')
+            with self.assertRaisesRegex(ValueError,'final answer|hash|semantic'):
+                runner.assess_files(result,review)
+
+    def test_review_rejects_modified_cited_source(self):
+        with tempfile.TemporaryDirectory() as td:
+            result,review,_,source = self.fixture(Path(td))
+            (source/'sqlite-queue.md').write_text('Changed after the reviewer\n')
+            with self.assertRaisesRegex(ValueError,'source|inventory|semantic'):
+                runner.assess_files(result,review)
+
+    def test_review_for_exact_final_and_source_can_pass_offline_adapter(self):
+        with tempfile.TemporaryDirectory() as td:
+            result,review,_,_ = self.fixture(Path(td))
+            code = runner.assess_files(result,review)
+            self.assertEqual(code,0)
+            recorded=json.loads((Path(td)/'acceptance-reviewed.json').read_text())
+            self.assertEqual(recorded['status'],'passed')
+            self.assertEqual(recorded['binding']['final_answer_sha256'],
+                             json.loads(review.read_text())['final_answer_sha256'])
 
 
 class OfflineReviewTests(unittest.TestCase):
